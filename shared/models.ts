@@ -80,19 +80,24 @@ export const WORKERS_AI_MODELS: WorkersAIModel[] = [
     note: "默认，Beta 阶段免费；8k 上下文，中文较弱",
   },
   {
-    id: "@cf/google/gemma-3-12b-it",
-    label: "Gemma 3 12B IT",
-    note: "中文与推理明显更好，按神经元计费",
-  },
-  {
-    id: "@cf/meta/llama-3.1-8b-instruct-fp8-fast",
-    label: "Llama 3.1 8B",
-    note: "响应快，适合日常对话",
-  },
-  {
     id: "@cf/qwen/qwen3-30b-a3b-fp8",
     label: "Qwen3 30B A3B",
-    note: "MoE 模型，中文表现好",
+    note: "MoE 模型，中文表现好，默认降级目标",
+  },
+  {
+    id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    label: "Llama 3.3 70B",
+    note: "质量更高，神经元消耗也更高",
+  },
+  {
+    id: "@cf/openai/gpt-oss-20b",
+    label: "GPT-OSS 20B",
+    note: "OpenAI 开源模型，通用性不错",
+  },
+  {
+    id: "@cf/google/gemma-4-26b-a4b-it",
+    label: "Gemma 4 26B A4B",
+    note: "新一代 Gemma，单价低",
   },
 ];
 

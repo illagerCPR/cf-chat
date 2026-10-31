@@ -20,9 +20,10 @@
 设计要点：
 
 1. **浏览器只与自己的 Worker 通信**。第三方密钥经 Worker 转发，避免 CORS 与密钥暴露在跨域请求里。
-2. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状（`choices[0].delta.content`），前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级）。
-3. **不缓冲**。上游响应直接 `pipeThrough`/逐块转发，Worker 只是 I/O，不占 CPU（免费版 CPU 上限 10ms/次）。
-4. **客户端断开即取消**。前端 `AbortController` → `request.signal` → 上游 `fetch` 取消。
+2. **Workers AI 的流式形状不统一**。`AI.run(..., { stream: true })` 现在返回 `ReadableStream`（二进制 SSE），历史版本还出现过 `{ response }` 对象流与纯文本流，`src/providers/workers-ai.ts` 会统一归一化；SSE 靠内容自动识别，不靠猜测。
+3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状（`choices[0].delta.content`），前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级）。
+4. **不缓冲**。上游响应直接 `pipeThrough`/逐块转发，Worker 只是 I/O，不占 CPU（免费版 CPU 上限 10ms/次）。
+5. **客户端断开即取消**。前端 `AbortController` → `request.signal` → 上游 `fetch` 取消。
 
 ## 目录结构
 
