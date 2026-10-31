@@ -1,4 +1,6 @@
 import type { ChatMessage, ThinkingMode } from "../../shared/models";
+import { estimatedUsage, estimatePromptTokens, providerUsage } from "../../shared/tokens";
+import type { Usage } from "../../shared/tokens";
 import { ProviderError, truncate, type Delta } from "../types";
 
 export interface CompatInput {
@@ -22,6 +24,8 @@ interface ParsedEvent {
   done: boolean;
   content?: string;
   reasoning?: string;
+  /** Exact accounting, only present on the final chunk of most providers. */
+  usage?: Usage;
   error?: string;
 }
 
@@ -42,15 +46,18 @@ function parseEvent(raw: string): ParsedEvent {
       const message = typeof error === "string" ? error : String(error.message ?? "上游返回错误");
       return { done: false, error: truncate(message) };
     }
+    const usage = providerUsage(payload.usage) ?? undefined;
     const choices = payload.choices as Array<Record<string, unknown>> | undefined;
     const choice = choices?.[0];
-    if (!choice) return { done: false };
+    // Usage arrives on its own chunk (`choices: []`) for OpenAI-style streams.
+    if (!choice) return { done: false, usage };
     const delta = choice.delta as Record<string, unknown> | undefined;
     const message = choice.message as Record<string, unknown> | undefined;
     const reasoning = delta?.reasoning_content ?? delta?.reasoning ?? message?.reasoning_content ?? message?.reasoning;
     const content = delta?.content ?? message?.content;
     return {
       done: false,
+      usage,
       reasoning: typeof reasoning === "string" ? reasoning : "",
       content: typeof content === "string" ? content : "",
     };
@@ -83,11 +90,7 @@ export function isDeepSeek(baseUrl: string): boolean {
   }
 }
 
-/** Streams an OpenAI-compatible chat completion, re-emitting deltas verbatim. */
-export async function* runOpenAICompatible(
-  input: CompatInput,
-  signal: AbortSignal,
-): AsyncGenerator<Delta> {
+function requestBody(input: CompatInput, includeUsage: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: input.model,
     messages: input.messages,
@@ -95,21 +98,40 @@ export async function* runOpenAICompatible(
     max_tokens: input.maxTokens,
     stream: true,
   };
+  // Open-style APIs only report usage when asked; providers that reject the
+  // field are retried once below without it.
+  if (includeUsage) body.stream_options = { include_usage: true };
   if (input.thinking !== "auto" && isDeepSeek(input.baseUrl)) {
     body.thinking = { type: input.thinking === "on" ? "enabled" : "disabled" };
   }
+  return body;
+}
 
-  const response = await fetch(endpoint(input.baseUrl), {
+function send(input: CompatInput, signal: AbortSignal, includeUsage: boolean): Promise<Response> {
+  return fetch(endpoint(input.baseUrl), {
     method: "POST",
     headers: {
       "content-type": "application/json",
       accept: "text/event-stream",
       authorization: `Bearer ${input.apiKey}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(requestBody(input, includeUsage)),
     signal,
   });
+}
 
+/** Streams an OpenAI-compatible chat completion, re-emitting deltas verbatim. */
+export async function* runOpenAICompatible(
+  input: CompatInput,
+  signal: AbortSignal,
+): AsyncGenerator<Delta> {
+  let response = await send(input, signal, true);
+  if (!response.ok && (response.status === 400 || response.status === 422)) {
+    // A strict server may reject `stream_options` outright; the conversation is
+    // still worth having without token accounting, so retry once without it.
+    await readError(response);
+    response = await send(input, signal, false);
+  }
   if (!response.ok) {
     const detail = await readError(response);
     throw new ProviderError(detail, response.status, "upstream_error");
@@ -124,6 +146,8 @@ export async function* runOpenAICompatible(
   let contentEmitted = false;
   let reasoningEmitted = false;
   let finished = false;
+  let usage: Usage | null = null;
+  let output = "";
 
   try {
     while (true) {
@@ -143,12 +167,15 @@ export async function* runOpenAICompatible(
           break;
         }
         if (event.error) throw new ProviderError(event.error, 502, "upstream_error");
+        if (event.usage) usage = event.usage;
         if (event.reasoning) {
           reasoningEmitted = true;
+          output += event.reasoning;
           yield { type: "reasoning", value: event.reasoning };
         }
         if (event.content) {
           contentEmitted = true;
+          output += event.content;
           yield { type: "content", value: event.content };
         }
 
@@ -159,12 +186,15 @@ export async function* runOpenAICompatible(
 
     if (!finished) {
       const tail = parseEvent(buffer);
+      if (tail.usage) usage = tail.usage;
       if (tail.reasoning) {
         reasoningEmitted = true;
+        output += tail.reasoning;
         yield { type: "reasoning", value: tail.reasoning };
       }
       if (tail.content) {
         contentEmitted = true;
+        output += tail.content;
         yield { type: "content", value: tail.content };
       }
       if (tail.error) throw new ProviderError(tail.error, 502, "upstream_error");
@@ -176,6 +206,11 @@ export async function* runOpenAICompatible(
         "thinking_only",
       );
     }
+
+    yield {
+      type: "usage",
+      value: usage ?? estimatedUsage(estimatePromptTokens(input.messages), output),
+    };
   } finally {
     reader.cancel().catch(() => undefined);
   }

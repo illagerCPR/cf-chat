@@ -1,4 +1,5 @@
 import type { ChatMessage, ThinkingMode } from "../../shared/models";
+import { estimatedUsage, estimatePromptTokens } from "../../shared/tokens";
 import type { Delta } from "../types";
 
 const DEMO_REPLY = `这是**本地演示回复**，由 Worker 内置的 mock 提供商生成，不会调用任何模型。
@@ -39,9 +40,10 @@ export async function* runMock(
     : "还没有收到问题。\n\n";
 
   const text = opener + DEMO_REPLY;
+  let reasoning = "";
 
   if (thinking !== "off") {
-    const reasoning =
+    reasoning =
       "（演示）先梳理一下要验证的点：流式通道是否把思考内容与正文分开、折叠面板是否自动展开与收起、停止生成后是否保留已生成的部分。然后再组织正式回复。";
     for (let index = 0; index < reasoning.length; index += 4) {
       await sleep(10);
@@ -53,4 +55,9 @@ export async function* runMock(
     await sleep(14);
     yield { type: "content", value: text.slice(index, index + 3) };
   }
+
+  yield {
+    type: "usage",
+    value: estimatedUsage(estimatePromptTokens(messages), reasoning + text),
+  };
 }

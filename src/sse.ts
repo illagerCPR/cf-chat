@@ -18,6 +18,10 @@ function frame(delta: Delta): string {
       })}\n\n`;
     case "reset":
       return `data: ${JSON.stringify({ "cf-chat": { reset: true } })}\n\n`;
+    case "usage":
+      // Usage rides on the same control channel as meta so the content parser
+      // stays purely OpenAI-shaped.
+      return `data: ${JSON.stringify({ "cf-chat": { usage: delta.value } })}\n\n`;
     case "error":
       return `data: ${JSON.stringify({
         error: { message: delta.message, code: delta.code ?? "upstream_error" },

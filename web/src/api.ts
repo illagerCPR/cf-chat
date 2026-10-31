@@ -1,4 +1,6 @@
 import type { ChatMessage, CompatPreset, ProviderKind, ThinkingMode } from "../../shared/models";
+import { providerUsage } from "../../shared/tokens";
+import type { Usage } from "../../shared/tokens";
 
 export interface ChatRequestBody {
   provider: ProviderKind;
@@ -16,6 +18,7 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "reset" }
+  | { type: "usage"; usage: Usage }
   | { type: "error"; message: string };
 
 export class ChatError extends Error {
@@ -61,6 +64,13 @@ function parseEvent(raw: string): ParsedEvent {
     const meta = payload["cf-chat"];
     if (meta && typeof meta === "object") {
       const record = meta as Record<string, unknown>;
+      if (record.usage && typeof record.usage === "object") {
+        const usage = providerUsage(record.usage);
+        if (usage) {
+          const estimated = (record.usage as { estimated?: unknown }).estimated === true;
+          return { type: "usage", usage: { ...usage, estimated } };
+        }
+      }
       if (record.reset) return { type: "reset" };
       return { type: "meta", data: record };
     }

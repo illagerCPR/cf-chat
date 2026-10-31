@@ -1,4 +1,5 @@
 import type { ChatMessage, ProviderKind, ThinkingMode } from "../../shared/models";
+import type { Usage } from "../../shared/tokens";
 import { newId } from "./util";
 
 export interface MessageMeta {
@@ -16,6 +17,8 @@ export interface MessageRecord {
   reasoning?: string;
   createdAt: number;
   meta?: MessageMeta;
+  /** Token accounting for this reply; absent on old records and on errors. */
+  usage?: Usage;
   error?: string;
 }
 
@@ -39,6 +42,8 @@ export interface Settings {
   maxTokens: number;
   thinking: ThinkingMode;
   showReasoning: boolean;
+  /** Show token counts per reply and per conversation. */
+  showUsage: boolean;
   backgroundDim: number;
   systemPrompt: string;
 }
@@ -58,6 +63,7 @@ export function defaultSettings(): Settings {
     maxTokens: 4096,
     thinking: "auto",
     showReasoning: true,
+    showUsage: true,
     backgroundDim: 75,
     systemPrompt: "",
   };
@@ -103,6 +109,7 @@ function normalizeSettings(raw: unknown): Settings {
         ? raw.thinking
         : base.thinking,
     showReasoning: typeof raw.showReasoning === "boolean" ? raw.showReasoning : base.showReasoning,
+    showUsage: typeof raw.showUsage === "boolean" ? raw.showUsage : base.showUsage,
     backgroundDim:
       typeof raw.backgroundDim === "number" && Number.isFinite(raw.backgroundDim)
         ? Math.min(90, Math.max(0, raw.backgroundDim))

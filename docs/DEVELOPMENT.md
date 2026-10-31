@@ -21,7 +21,7 @@
 
 1. **浏览器只与自己的 Worker 通信**。第三方密钥经 Worker 转发，避免 CORS 与密钥暴露在跨域请求里。
 2. **Workers AI 的流式形状不统一**。`AI.run(..., { stream: true })` 现在返回 `ReadableStream`（二进制 SSE），历史版本还出现过 `{ response }` 对象流与纯文本流，`src/providers/workers-ai.ts` 会统一归一化；SSE 靠内容自动识别，不靠猜测。
-3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状：正文走 `choices[0].delta.content`，思考过程走 `choices[0].delta.reasoning_content`，前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级、`reset` 重试清屏）。
+3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状：正文走 `choices[0].delta.content`，思考过程走 `choices[0].delta.reasoning_content`，前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级、`reset` 重试清屏、本轮 `usage`）。
 4. **不缓冲**。上游响应直接 `pipeThrough`/逐块转发，Worker 只是 I/O，不占 CPU（免费版 CPU 上限 10ms/次）。
 5. **客户端断开即取消**。前端 `AbortController` → `request.signal` → 上游 `fetch` 取消。
 
@@ -29,6 +29,7 @@
 
 ```
 shared/models.ts          提供商预设、Workers AI 模型清单（前后端共用）
+shared/tokens.ts          Usage 类型、字符估算、usage 归一化（前后端共用）
 src/
   index.ts                路由
   chat.ts                 请求校验、限流、提供商解析、降级逻辑
@@ -45,6 +46,7 @@ web/
   src/ui.ts               应用控制器（渲染、流式、设置面板）
   src/store.ts            设置与对话持久化
   src/api.ts              SSE 客户端
+  src/usage.ts            单条回复与整段对话的 token 统计
   src/background.ts       背景图压缩与 IndexedDB 存取
   src/markdown.ts         marked + DOMPurify
   src/styles.css
@@ -96,12 +98,25 @@ data: {"cf-chat":{"provider":"workers-ai","model":"@cf/...","fallback":false}}
 data: {"choices":[{"index":0,"delta":{"reasoning_content":"先确认问题…"}}]}
 data: {"choices":[{"index":0,"delta":{"content":"你"}}]}
 data: {"choices":[{"index":0,"delta":{"content":"好"}}]}
+data: {"cf-chat":{"usage":{"promptTokens":1024,"completionTokens":356,"totalTokens":1380,"estimated":false}}}
 data: [DONE]
 ```
+
+`usage` 固定是本轮最后一帧（`[DONE]` 之前）。`promptTokens` 是这一轮实际发出的上下文（含系统提示词与最近 20 条历史），`completionTokens` 含思考内容；`estimated: true` 表示数字来自字符估算而不是提供商。
 
 如果默认模型只产出思考、没有正文，Worker 会先发 `{"cf-chat":{"reset":true}}` 清掉前端已渲染的内容，再发降级 meta 并用备用模型重试。
 
 出错（发生在流开始前）返回 JSON：`{ "error": { "code": "...", "message": "..." } }`，状态码透传上游（如 401/429）。流中途出错则以 `{"error": {...}}` 事件 + `[DONE]` 结束。
+
+## Token 用量
+
+数字有两个来源，前端只认 `Usage` 类型，不区分提供商：
+
+- **OpenAI 兼容**：请求附加 `stream_options.include_usage`；上游以 400/422 拒绝该字段时会自动去掉再重试一次（避免严格服务商直接失败）。usage 取流里最后一帧，兼容 OpenAI 那种 `choices: []` 的独立 usage 帧；DeepSeek 默认就把它挂在最后一个内容帧上。提供商完全不返回时退化为估算。
+- **Workers AI**：流式接口没有承诺返回 usage。分片里若出现 `usage` 就直接采用，否则按字符估算。
+- **估算规则**（`shared/tokens.ts`）：CJK 字符约 0.6 token/字、ASCII 约 0.3 token/字符、emoji 约 2 token/个，每条消息再加 4 token 的结构开销，整体 +3。误差通常在一两成以内，够用来判断额度消耗，不应当拿来做精确计费。
+
+`completionTokens` 包含思考内容（DeepSeek 同时给出 `reasoningTokens`）。前端把 usage 随消息存进 IndexedDB；旧消息、被中断的流没有服务端数据时，在 `web/src/usage.ts` 里按同一套规则本地估算，并标 `≈`。整段对话的「累计」是各轮 `promptTokens + completionTokens` 求和，因为每轮都会重新携带历史，它天然大于「上下文」。
 
 ## 安全边界
 

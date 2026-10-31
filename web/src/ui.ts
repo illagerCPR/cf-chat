@@ -1,5 +1,7 @@
 import { COMPAT_PRESETS, WORKERS_AI_MODELS, findPreset } from "../../shared/models";
 import type { ProviderKind } from "../../shared/models";
+import { estimatedUsage, estimatePromptTokens } from "../../shared/tokens";
+import type { Usage } from "../../shared/tokens";
 import { ChatError, fetchCatalog, streamChat, type Catalog, type StreamEvent } from "./api";
 import {
   applyBackground,
@@ -21,6 +23,12 @@ import {
   type MessageRecord,
   type Settings,
 } from "./store";
+import {
+  conversationUsage,
+  formatConversationUsage,
+  formatUsageLine,
+  usageForMessage,
+} from "./usage";
 import { relativeTime, shortModelName, throttle, truncateTitle } from "./util";
 
 function must<T extends Element>(selector: string): T {
@@ -57,6 +65,7 @@ interface Elements {
   input: HTMLTextAreaElement;
   send: HTMLButtonElement;
   stop: HTMLButtonElement;
+  usageSummary: HTMLElement;
   settingsDialog: HTMLDialogElement;
 }
 
@@ -84,6 +93,7 @@ export class App {
     input: must("#input"),
     send: must("#send"),
     stop: must("#stop"),
+    usageSummary: must("#usage-summary"),
     settingsDialog: must("#settings-dialog"),
   };
 
@@ -211,7 +221,7 @@ export class App {
     return details;
   }
 
-  private buildMessage(record: MessageRecord, isLast = false): HTMLElement {
+  private buildMessage(record: MessageRecord, isLast = false, usage?: Usage): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = `msg ${record.role}`;
     wrap.dataset.id = record.id;
@@ -253,6 +263,16 @@ export class App {
         if (record.meta.reason === "stopped") parts.push("已停止");
         meta.textContent = parts.join(" · ");
         body.append(meta);
+      }
+
+      if (this.settings.showUsage && usage) {
+        const line = document.createElement("p");
+        line.className = "usage";
+        line.textContent = formatUsageLine(usage);
+        line.title = usage.estimated
+          ? "按字符估算，不是模型返回的精确计数"
+          : "由提供商返回的精确用量（输入为这一轮携带的完整上下文）";
+        body.append(line);
       }
 
       if (record.content.trim() || isLast) {
@@ -298,7 +318,14 @@ export class App {
 
     conversation.messages.forEach((message, index) => {
       const isLast = index === conversation.messages.length - 1;
-      this.els.messages.append(this.buildMessage(message, isLast && message.role === "assistant"));
+      const usage = usageForMessage(
+        message,
+        conversation.messages.slice(0, index),
+        this.settings.systemPrompt,
+      );
+      this.els.messages.append(
+        this.buildMessage(message, isLast && message.role === "assistant", usage),
+      );
     });
     this.scrollToBottom(true);
   }
@@ -306,6 +333,7 @@ export class App {
   private updateChrome(): void {
     const conversation = this.activeConversation();
     this.els.chatTitle.textContent = conversation?.title ?? "新对话";
+    this.updateUsageSummary();
 
     if (this.settings.provider === "mock") {
       this.els.modelChip.textContent = "演示模式";
@@ -320,6 +348,28 @@ export class App {
     const preset = findPreset(this.settings.presetId);
     const model = this.compatModel();
     this.els.modelChip.textContent = preset ? `${preset.label} · ${shortModelName(model)}` : shortModelName(model);
+  }
+
+  private updateUsageSummary(): void {
+    const element = this.els.usageSummary;
+    const stats = this.settings.showUsage
+      ? conversationUsage(this.activeConversation(), this.settings.systemPrompt)
+      : null;
+
+    if (!stats) {
+      element.hidden = true;
+      element.textContent = "";
+      element.removeAttribute("title");
+      return;
+    }
+
+    element.hidden = false;
+    element.textContent = formatConversationUsage(stats);
+    element.title = [
+      `输入合计 ${stats.promptTokens} · 输出合计 ${stats.completionTokens}`,
+      `当前上下文 ${stats.contextTokens}`,
+      "每轮都会重新携带历史，所以累计大于上下文；≈ 表示按字符估算",
+    ].join(" · ");
   }
 
   // ------------------------------------------------------------------- state
@@ -442,6 +492,7 @@ export class App {
     let thinkingLabel: HTMLElement | null = null;
     let thinkingCount: HTMLElement | null = null;
     let meta: MessageMeta | undefined;
+    let usage: Usage | undefined;
     let stopped = false;
 
     const flush = throttle(() => {
@@ -477,11 +528,14 @@ export class App {
       thinkingLabel = null;
       thinkingCount = null;
       meta = undefined;
+      usage = undefined;
     };
+
+    const request = this.buildRequest(conversation, assistant);
 
     try {
       for await (const event of streamChat(
-        this.buildRequest(conversation, assistant),
+        request,
         this.currentKey(),
         controller.signal,
       )) {
@@ -512,6 +566,9 @@ export class App {
             meta = { model: String(data.model ?? ""), provider: String(data.provider ?? "") };
             if (data.fallback) meta.fallback = true;
           },
+          onUsage: (value) => {
+            usage = value;
+          },
           onError: (message) => {
             throw new ChatError(message);
           },
@@ -534,6 +591,12 @@ export class App {
       assistant.content = buffer;
       if (reasoning.trim()) assistant.reasoning = reasoning;
       if (meta) assistant.meta = meta;
+      if (!usage && (buffer || reasoning)) {
+        // Interrupted or errored stream: the Worker only reports usage for a
+        // finished turn, so estimate from what actually arrived.
+        usage = estimatedUsage(estimatePromptTokens(request.messages), buffer + reasoning);
+      }
+      if (usage) assistant.usage = usage;
       if (stopped) {
         assistant.meta = { ...(meta ?? { model: "", provider: "" }), reason: "stopped" } as MessageMeta;
         if (!assistant.content.trim()) assistant.error = "已停止生成。";
@@ -549,7 +612,7 @@ export class App {
       this.renderSidebar();
       this.updateChrome();
 
-      const fresh = this.buildMessage(assistant, true);
+      const fresh = this.buildMessage(assistant, true, assistant.usage);
       node.replaceWith(fresh);
       this.scrollToBottom();
     }
@@ -562,6 +625,7 @@ export class App {
       onReasoning: (text: string) => void;
       onReset: () => void;
       onMeta: (data: Record<string, unknown>) => void;
+      onUsage: (usage: Usage) => void;
       onError: (message: string) => void;
     },
   ): void {
@@ -577,6 +641,9 @@ export class App {
         break;
       case "meta":
         handlers.onMeta(event.data);
+        break;
+      case "usage":
+        handlers.onUsage(event.usage);
         break;
       case "error":
         handlers.onError(event.message);
@@ -799,6 +866,15 @@ export class App {
           </div>
 
           <div class="field">
+            <label>Token 用量</label>
+            <label class="check-row">
+              <input id="set-show-usage" type="checkbox" />
+              <span>显示每条回复与整个对话的 token 数</span>
+            </label>
+            <p class="hint">OpenAI 兼容提供商通常返回精确值；Workers AI 按字符估算，数字前会标 ≈。</p>
+          </div>
+
+          <div class="field">
             <label for="set-bg-file">背景图片</label>
             <div class="file-row">
               <input id="set-bg-file" type="file" accept="image/*" />
@@ -839,6 +915,7 @@ export class App {
     const tokensInput = dialog.querySelector<HTMLInputElement>("#set-tokens");
     const thinkingSelect = dialog.querySelector<HTMLSelectElement>("#set-thinking");
     const showReasoningInput = dialog.querySelector<HTMLInputElement>("#set-show-reasoning");
+    const showUsageInput = dialog.querySelector<HTMLInputElement>("#set-show-usage");
     const bgFile = dialog.querySelector<HTMLInputElement>("#set-bg-file");
     const bgRemove = dialog.querySelector<HTMLButtonElement>("#set-bg-remove");
     const bgPreview = dialog.querySelector<HTMLImageElement>("#set-bg-preview");
@@ -864,6 +941,7 @@ export class App {
       !tokensInput ||
       !thinkingSelect ||
       !showReasoningInput ||
+      !showUsageInput ||
       !bgFile ||
       !bgRemove ||
       !bgPreview ||
@@ -889,6 +967,7 @@ export class App {
     tokensInput.value = String(this.settings.maxTokens);
     thinkingSelect.value = this.settings.thinking;
     showReasoningInput.checked = this.settings.showReasoning;
+    showUsageInput.checked = this.settings.showUsage;
     bgDimInput.value = String(this.settings.backgroundDim);
     bgDimValue.textContent = `${this.settings.backgroundDim}%`;
     if (this.backgroundImage) {
@@ -998,6 +1077,7 @@ export class App {
           thinking:
             thinkingValue === "on" || thinkingValue === "off" ? thinkingValue : "auto",
           showReasoning: showReasoningInput.checked,
+          showUsage: showUsageInput.checked,
           backgroundDim: Number.isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 75,
           systemPrompt: systemInput.value,
         };

@@ -1,3 +1,5 @@
+import type { Usage } from "../shared/tokens";
+
 export interface Env {
   AI?: Ai;
   ASSETS?: Fetcher;
@@ -20,6 +22,8 @@ export type Delta =
   | { type: "reasoning"; value: string }
   /** Clears what the browser already rendered, used before a retry. */
   | { type: "reset" }
+  /** Token accounting for the finished turn; sent just before `[DONE]`. */
+  | { type: "usage"; value: Usage }
   | { type: "error"; message: string; code?: string };
 
 export class ProviderError extends Error {

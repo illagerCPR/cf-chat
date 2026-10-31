@@ -1,4 +1,6 @@
 import type { ChatMessage, ThinkingMode } from "../../shared/models";
+import { estimatedUsage, estimatePromptTokens, providerUsage } from "../../shared/tokens";
+import type { Usage } from "../../shared/tokens";
 import { ProviderError, errorMessage, type Delta, type Env } from "../types";
 
 export interface WorkersAIInput {
@@ -14,10 +16,17 @@ const EVENT_SEPARATOR = /\r?\n\r?\n/;
 /** Model families that read `chat_template_kwargs.enable_thinking`. */
 const THINKING_FAMILIES = ["qwen3", "gemma-4", "glm-4", "nemotron"];
 
-interface Piece {
+interface TextPiece {
   kind: "content" | "reasoning";
   text: string;
 }
+
+interface UsagePiece {
+  kind: "usage";
+  usage: Usage;
+}
+
+type Piece = TextPiece | UsagePiece;
 
 function thinkingKwargs(
   model: string,
@@ -60,7 +69,7 @@ function toGemmaPrompt(messages: ChatMessage[]): string {
   return turns.join("\n");
 }
 
-function addPiece(out: Piece[], kind: Piece["kind"], value: unknown): void {
+function addPiece(out: Piece[], kind: TextPiece["kind"], value: unknown): void {
   if (typeof value === "string" && value) out.push({ kind, text: value });
 }
 
@@ -70,6 +79,10 @@ function addPiece(out: Piece[], kind: Piece["kind"], value: unknown): void {
  * Reasoning models (Qwen3, Kimi, DeepSeek on other providers) return their
  * chain of thought beside the answer, usually as `reasoning_content` and
  * sometimes as `reasoning`. Both are kept separate from the answer text.
+ *
+ * A usage object is picked up whenever a chunk carries one, although the
+ * streaming endpoint is not documented to send it; without one the caller
+ * falls back to the character estimate.
  */
 function piecesOf(chunk: unknown): Piece[] {
   if (typeof chunk === "string") {
@@ -79,10 +92,13 @@ function piecesOf(chunk: unknown): Piece[] {
 
   const out: Piece[] = [];
   const record = chunk as Record<string, unknown>;
+  const usage = providerUsage(record.usage);
+  if (usage) out.push({ kind: "usage", usage });
 
   // Native prompt-style response: one text field, no choices.
   if (typeof record.response === "string" && record.response) {
-    return [{ kind: "content", text: record.response }];
+    out.push({ kind: "content", text: record.response });
+    return out;
   }
 
   const choices = record.choices;
@@ -270,9 +286,17 @@ export async function* runWorkersAI(
 
     let attemptContent = false;
     let attemptReasoning = false;
+    let usage: Usage | null = null;
+    let output = "";
     try {
       const result = await ai.run(input.model, payload as never, { signal } as never);
       for await (const piece of normalize(result)) {
+        if (piece.kind === "usage") {
+          usage = piece.usage;
+          yield { type: "usage", value: piece.usage };
+          continue;
+        }
+        output += piece.text;
         if (piece.kind === "content") attemptContent = true;
         else attemptReasoning = true;
         yield { type: piece.kind, value: piece.text };
@@ -301,7 +325,17 @@ export async function* runWorkersAI(
       continue;
     }
 
-    if (attemptContent) return;
+    if (attemptContent) {
+      // The streaming endpoint is not documented to return usage, so fall back
+      // to a character estimate rather than showing nothing at all.
+      if (!usage) {
+        yield {
+          type: "usage",
+          value: estimatedUsage(estimatePromptTokens(input.messages), output),
+        };
+      }
+      return;
+    }
     if (attemptReasoning) {
       throw new ProviderError(
         "模型只生成了思考内容，没有正文（可能已达到最大 tokens）。",
