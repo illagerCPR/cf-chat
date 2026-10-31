@@ -1,0 +1,11 @@
+# Copy this file to `.dev.vars` to override defaults while running `wrangler dev`.
+#
+# Enable the offline demo provider (streams a canned reply, needs no account):
+# MOCK_AI=true
+#
+# Optional: a server-side default key for an OpenAI-compatible provider. Useful
+# when you want visitors to chat without pasting their own key. Leave empty to
+# require per-visitor keys for third-party providers.
+# OPENAI_COMPAT_BASE_URL=https://api.deepseek.com/v1
+# OPENAI_COMPAT_API_KEY=sk-...
+# OPENAI_COMPAT_MODEL=deepseek-chat

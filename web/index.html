@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cf-chat</title>
+    <meta
+      name="description"
+      content="一个运行在 Cloudflare Workers 上的极简 AI 对话页面，默认使用 Workers AI，也可以接入任意 OpenAI 兼容提供商。"
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head">
+          <span class="brand">cf<span>·</span>chat</span>
+          <button class="icon-btn sidebar-close" id="close-sidebar" aria-label="收起侧栏">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <button class="new-chat" id="new-chat">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+          <span>新对话</span>
+        </button>
+        <nav class="conversation-list" id="conversation-list" aria-label="历史对话"></nav>
+        <div class="sidebar-foot">
+          <button class="ghost-btn" id="open-settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+            <span>设置</span>
+          </button>
+          <span class="model-chip" id="model-chip">—</span>
+        </div>
+      </aside>
+
+      <div class="scrim" id="scrim"></div>
+
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-btn menu-btn" id="open-sidebar" aria-label="打开侧栏">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+          </button>
+          <h1 id="chat-title">新对话</h1>
+          <span class="status" id="status" aria-live="polite"></span>
+        </header>
+
+        <div class="messages" id="messages">
+          <section class="empty-state">
+            <h2>开始一段对话</h2>
+            <p>
+              默认使用 Cloudflare Workers AI，无需任何密钥。想换成别的模型，先在设置里选一个提供商，
+              填上你自己的 API Key 即可。
+            </p>
+          </section>
+        </div>
+
+        <div class="composer-wrap">
+          <form class="composer" id="composer">
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="问点什么…"
+              aria-label="输入消息"
+              autocomplete="off"
+            ></textarea>
+            <div class="composer-actions">
+              <button type="button" class="stop-btn" id="stop" hidden>停止</button>
+              <button type="submit" class="send-btn" id="send" aria-label="发送">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
+              </button>
+            </div>
+          </form>
+          <p class="composer-hint" id="composer-hint">
+            Enter 发送 · Shift + Enter 换行 · 对话保存在本浏览器
+          </p>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="settings-dialog" class="settings"></dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
