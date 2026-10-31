@@ -113,7 +113,7 @@ data: [DONE]
 数字有两个来源，前端只认 `Usage` 类型，不区分提供商：
 
 - **OpenAI 兼容**：请求附加 `stream_options.include_usage`；上游以 400/422 拒绝该字段时会自动去掉再重试一次（避免严格服务商直接失败）。usage 取流里最后一帧，兼容 OpenAI 那种 `choices: []` 的独立 usage 帧；DeepSeek 默认就把它挂在最后一个内容帧上。提供商完全不返回时退化为估算。
-- **Workers AI**：流式接口没有承诺返回 usage。分片里若出现 `usage` 就直接采用，否则按字符估算。
+- **Workers AI**：实测 qwen3 会在分片里带 `usage`，但同一个流里会出现多次（首个是 0/0/0 的占位），只取最后一个非零值并在结束时统一发一帧。没有 usage 的模型（例如部分 prompt 风格模型）退化为估算。
 - **估算规则**（`shared/tokens.ts`）：CJK 字符约 0.6 token/字、ASCII 约 0.3 token/字符、emoji 约 2 token/个，每条消息再加 4 token 的结构开销，整体 +3。误差通常在一两成以内，够用来判断额度消耗，不应当拿来做精确计费。
 
 `completionTokens` 包含思考内容（DeepSeek 同时给出 `reasoningTokens`）。前端把 usage 随消息存进 IndexedDB；旧消息、被中断的流没有服务端数据时，在 `web/src/usage.ts` 里按同一套规则本地估算，并标 `≈`。整段对话的「累计」是各轮 `promptTokens + completionTokens` 求和，因为每轮都会重新携带历史，它天然大于「上下文」。

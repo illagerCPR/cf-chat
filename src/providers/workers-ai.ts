@@ -80,9 +80,9 @@ function addPiece(out: Piece[], kind: TextPiece["kind"], value: unknown): void {
  * chain of thought beside the answer, usually as `reasoning_content` and
  * sometimes as `reasoning`. Both are kept separate from the answer text.
  *
- * A usage object is picked up whenever a chunk carries one, although the
- * streaming endpoint is not documented to send it; without one the caller
- * falls back to the character estimate.
+ * A usage object is picked up whenever a chunk carries one. Workers AI sends
+ * it more than once (the first frame is often a zeroed placeholder), so the
+ * caller keeps the last non-zero value and reports it once at the end.
  */
 function piecesOf(chunk: unknown): Piece[] {
   if (typeof chunk === "string") {
@@ -292,8 +292,10 @@ export async function* runWorkersAI(
       const result = await ai.run(input.model, payload as never, { signal } as never);
       for await (const piece of normalize(result)) {
         if (piece.kind === "usage") {
-          usage = piece.usage;
-          yield { type: "usage", value: piece.usage };
+          // Workers AI emits usage more than once, starting with a zeroed
+          // placeholder. Keep the last non-zero one and report it once the
+          // turn ends.
+          if (piece.usage.totalTokens > 0) usage = piece.usage;
           continue;
         }
         output += piece.text;
@@ -326,14 +328,10 @@ export async function* runWorkersAI(
     }
 
     if (attemptContent) {
-      // The streaming endpoint is not documented to return usage, so fall back
-      // to a character estimate rather than showing nothing at all.
-      if (!usage) {
-        yield {
-          type: "usage",
-          value: estimatedUsage(estimatePromptTokens(input.messages), output),
-        };
-      }
+      yield {
+        type: "usage",
+        value: usage ?? estimatedUsage(estimatePromptTokens(input.messages), output),
+      };
       return;
     }
     if (attemptReasoning) {

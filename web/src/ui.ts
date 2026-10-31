@@ -871,7 +871,7 @@ export class App {
               <input id="set-show-usage" type="checkbox" />
               <span>显示每条回复与整个对话的 token 数</span>
             </label>
-            <p class="hint">OpenAI 兼容提供商通常返回精确值；Workers AI 按字符估算，数字前会标 ≈。</p>
+            <p class="hint">提供商返回用量时显示精确值；拿不到时按字符估算，数字前会标 ≈。</p>
           </div>
 
           <div class="field">

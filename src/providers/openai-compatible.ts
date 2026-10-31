@@ -167,7 +167,7 @@ export async function* runOpenAICompatible(
           break;
         }
         if (event.error) throw new ProviderError(event.error, 502, "upstream_error");
-        if (event.usage) usage = event.usage;
+        if (event.usage && event.usage.totalTokens > 0) usage = event.usage;
         if (event.reasoning) {
           reasoningEmitted = true;
           output += event.reasoning;
@@ -186,7 +186,7 @@ export async function* runOpenAICompatible(
 
     if (!finished) {
       const tail = parseEvent(buffer);
-      if (tail.usage) usage = tail.usage;
+      if (tail.usage && tail.usage.totalTokens > 0) usage = tail.usage;
       if (tail.reasoning) {
         reasoningEmitted = true;
         output += tail.reasoning;
