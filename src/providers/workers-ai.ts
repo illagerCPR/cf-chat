@@ -80,7 +80,10 @@ function piecesOf(chunk: unknown): Piece[] {
   const out: Piece[] = [];
   const record = chunk as Record<string, unknown>;
 
-  addPiece(out, "content", record.response);
+  // Native prompt-style response: one text field, no choices.
+  if (typeof record.response === "string" && record.response) {
+    return [{ kind: "content", text: record.response }];
+  }
 
   const choices = record.choices;
   if (Array.isArray(choices) && choices.length > 0) {
@@ -88,17 +91,20 @@ function piecesOf(chunk: unknown): Piece[] {
     const delta = choice?.delta as Record<string, unknown> | undefined;
     const message = choice?.message as Record<string, unknown> | undefined;
 
+    // A streamed chunk carries either a delta or a full message, never both.
+    // Reading both would duplicate every token.
     if (delta) {
-      addPiece(out, "reasoning", delta.reasoning_content);
-      addPiece(out, "reasoning", delta.reasoning);
+      addPiece(out, "reasoning", delta.reasoning_content ?? delta.reasoning);
       addPiece(out, "content", delta.content);
+      return out;
     }
     if (message) {
-      addPiece(out, "reasoning", message.reasoning_content);
-      addPiece(out, "reasoning", message.reasoning);
+      addPiece(out, "reasoning", message.reasoning_content ?? message.reasoning);
       addPiece(out, "content", message.content);
+      return out;
     }
     addPiece(out, "content", choice?.text);
+    return out;
   }
 
   addPiece(out, "content", record.text);
