@@ -25,7 +25,7 @@
     }
   ],
   "vars": {
-    "DEFAULT_MODEL": "@cf/google/gemma-2b-it-lora",
-    "FALLBACK_MODEL": "@cf/qwen/qwen3-30b-a3b-fp8"
+    "DEFAULT_MODEL": "@cf/qwen/qwen3-30b-a3b-fp8",
+    "FALLBACK_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   }
 }

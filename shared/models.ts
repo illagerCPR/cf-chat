@@ -75,19 +75,19 @@ export interface WorkersAIModel {
 /** Curated Workers AI models. Any model id can still be typed in by hand. */
 export const WORKERS_AI_MODELS: WorkersAIModel[] = [
   {
-    id: "@cf/google/gemma-2b-it-lora",
-    label: "Gemma 2B IT (LoRA)",
-    note: "默认，Beta 阶段免费；8k 上下文，中文较弱",
-  },
-  {
     id: "@cf/qwen/qwen3-30b-a3b-fp8",
     label: "Qwen3 30B A3B",
-    note: "MoE 模型，中文表现好，默认降级目标",
+    note: "默认模型，中文表现好、成本低",
   },
   {
     id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     label: "Llama 3.3 70B",
-    note: "质量更高，神经元消耗也更高",
+    note: "降级目标，质量更高，神经元消耗也更高",
+  },
+  {
+    id: "@cf/google/gemma-2b-it-lora",
+    label: "Gemma 2B IT (LoRA)",
+    note: "2B 参数，Beta 阶段免费，中文较弱",
   },
   {
     id: "@cf/openai/gpt-oss-20b",

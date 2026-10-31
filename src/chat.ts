@@ -315,7 +315,7 @@ export async function handleChat(request: Request, env: Env): Promise<Response> 
 
   try {
     const workersAI: WorkersAITarget = {
-      model: payload.model || env.DEFAULT_MODEL || "@cf/google/gemma-2b-it-lora",
+      model: payload.model || env.DEFAULT_MODEL || "@cf/qwen/qwen3-30b-a3b-fp8",
       fallbackModel: env.FALLBACK_MODEL,
     };
     const compat =

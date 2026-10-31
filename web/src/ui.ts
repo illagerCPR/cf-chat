@@ -601,7 +601,7 @@ export class App {
     const presetOptions = COMPAT_PRESETS.map(
       (preset) => `<option value="${preset.id}">${preset.label}</option>`,
     ).join("");
-    const workersHint = this.catalog?.workersAI.defaultModel ?? "@cf/google/gemma-2b-it-lora";
+    const workersHint = this.catalog?.workersAI.defaultModel ?? "@cf/qwen/qwen3-30b-a3b-fp8";
     const fallback = this.catalog?.workersAI.fallbackModel;
     const providerOptions = [
       `<option value="workers-ai">Workers AI（内置，无需密钥）</option>`,

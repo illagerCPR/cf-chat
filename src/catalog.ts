@@ -7,7 +7,7 @@ export async function handleCatalog(env: Env): Promise<Response> {
   return json({
     workersAI: {
       configured: Boolean(env.AI),
-      defaultModel: env.DEFAULT_MODEL ?? "@cf/google/gemma-2b-it-lora",
+      defaultModel: env.DEFAULT_MODEL ?? "@cf/qwen/qwen3-30b-a3b-fp8",
       fallbackModel: env.FALLBACK_MODEL ?? null,
       models: WORKERS_AI_MODELS,
     },

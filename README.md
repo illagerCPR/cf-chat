@@ -63,8 +63,8 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 
 | 项目 | 位置 | 说明 |
 | --- | --- | --- |
-| 默认模型 | `wrangler.jsonc` → `vars.DEFAULT_MODEL` | 默认 `@cf/google/gemma-2b-it-lora` |
-| 降级模型 | `wrangler.jsonc` → `vars.FALLBACK_MODEL` | 默认 `@cf/qwen/qwen3-30b-a3b-fp8` |
+| 默认模型 | `wrangler.jsonc` → `vars.DEFAULT_MODEL` | 默认 `@cf/qwen/qwen3-30b-a3b-fp8` |
+| 降级模型 | `wrangler.jsonc` → `vars.FALLBACK_MODEL` | 默认 `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
 | 提供方列表 | `shared/models.ts` | 增删预设或改默认 Base URL |
 | 服务端默认密钥 | `wrangler secret put OPENAI_COMPAT_API_KEY` | 可选；让访客不填 Key 也能用某个服务商 |
 | 限流 | `wrangler.jsonc` → `ratelimits` | 默认 12 次 / 60 秒 / IP |
@@ -72,7 +72,7 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 ## 已知限制
 
 - Workers AI 免费额度为 10000 Neurons/天（`00:00 UTC` 重置），额度用尽后对话会失败
-- 默认的 `gemma-2b-it-lora` 只有 2B 参数，中文质量一般；想要更好的效果可在设置里换成 `@cf/qwen/qwen3-30b-a3b-fp8`
+- 默认的 `qwen3-30b-a3b-fp8` 是 MoE 模型，中文表现不错；如果想更省额度可以换回 `@cf/google/gemma-2b-it-lora`（2B，中文较弱）
 - `@cf/google/gemma-3-12b-it` 等部分模型需要账户具备权限，免费账户可能返回 `5018: This account is not allowed to access …`
 - 上下文只截取最近 20 条消息，长对话不会无限增长
 - 对话不跨设备同步（没有账号系统）
