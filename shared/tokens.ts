@@ -1,9 +1,9 @@
 /**
  * Token accounting shared by the Worker and the browser.
  *
- * OpenAI-compatible providers report exact usage; Workers AI's streaming
- * endpoint does not, so those numbers are extrapolated from character counts
- * and flagged as estimates. The heuristic follows DeepSeek's published rule of
+ * Numbers come from the provider when the stream reports usage. Some providers
+ * and some Workers AI models do not, so the fallback is a character estimate
+ * flagged with `estimated`. The heuristic follows DeepSeek's published rule of
  * thumb: one CJK character ≈ 0.6 token, one ASCII character ≈ 0.3 token.
  */
 
