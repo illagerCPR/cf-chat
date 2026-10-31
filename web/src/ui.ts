@@ -368,7 +368,7 @@ export class App {
     element.title = [
       `输入合计 ${stats.promptTokens} · 输出合计 ${stats.completionTokens}`,
       `当前上下文 ${stats.contextTokens}`,
-      "每轮都会重新携带历史，所以累计大于上下文；≈ 表示按字符估算",
+      "每轮都会重新携带历史，所以累计大于上下文；≈ 表示全部按字符估算，含估算表示部分数字是估算",
     ].join(" · ");
   }
 

@@ -34,7 +34,8 @@ export interface ConversationUsage {
   totalTokens: number;
   /** Prompt size of the newest reply, i.e. how large the context has grown. */
   contextTokens: number;
-  estimated: boolean;
+  /** Replies whose numbers came from the character estimate. */
+  estimatedReplies: number;
 }
 
 export function conversationUsage(
@@ -49,7 +50,7 @@ export function conversationUsage(
     completionTokens: 0,
     totalTokens: 0,
     contextTokens: 0,
-    estimated: false,
+    estimatedReplies: 0,
   };
 
   conversation.messages.forEach((message, index) => {
@@ -61,7 +62,7 @@ export function conversationUsage(
     stats.completionTokens += usage.completionTokens;
     stats.totalTokens += usage.totalTokens;
     stats.contextTokens = usage.promptTokens;
-    stats.estimated = stats.estimated || usage.estimated;
+    if (usage.estimated) stats.estimatedReplies += 1;
   });
 
   return stats.replies > 0 ? stats : null;
@@ -77,8 +78,11 @@ export function formatUsageLine(usage: Usage): string {
 
 /** Conversation footer, e.g. "本对话 3 轮 · 累计 1,820 tokens · 上下文 1,204". */
 export function formatConversationUsage(stats: ConversationUsage): string {
-  const approx = stats.estimated ? "≈ " : "";
+  const allEstimated = stats.estimatedReplies === stats.replies;
+  const mixed = stats.estimatedReplies > 0 && !allEstimated;
+  const approx = allEstimated ? "≈ " : "";
+  const suffix = mixed ? " · 含估算" : "";
   return `${approx}本对话 ${stats.replies} 轮 · 累计 ${formatTokens(
     stats.totalTokens,
-  )} tokens · 上下文 ${formatTokens(stats.contextTokens)}`;
+  )} tokens · 上下文 ${formatTokens(stats.contextTokens)}${suffix}`;
 }
