@@ -810,7 +810,7 @@ export class App {
               <input id="set-bg-dim" type="range" min="0" max="90" step="5" />
               <output id="bg-dim-value"></output>
             </div>
-            <p class="hint" id="bg-hint">图片只保存在本浏览器，上传时自动压缩。</p>
+            <p class="hint" id="bg-hint">数值越高图片越淡；图片只保存在本浏览器，上传时自动压缩。</p>
           </div>
 
           <div class="field">
@@ -998,7 +998,7 @@ export class App {
           thinking:
             thinkingValue === "on" || thinkingValue === "off" ? thinkingValue : "auto",
           showReasoning: showReasoningInput.checked,
-          backgroundDim: Number.isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 65,
+          backgroundDim: Number.isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 75,
           systemPrompt: systemInput.value,
         };
         saveSettings(this.settings);

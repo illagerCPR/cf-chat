@@ -58,7 +58,7 @@ export function defaultSettings(): Settings {
     maxTokens: 4096,
     thinking: "auto",
     showReasoning: true,
-    backgroundDim: 65,
+    backgroundDim: 75,
     systemPrompt: "",
   };
 }
@@ -75,6 +75,10 @@ function normalizeSettings(raw: unknown): Settings {
   const keys = isRecord(raw.keys) ? (raw.keys as Record<string, string>) : base.keys;
   const presetId = typeof raw.presetId === "string" ? raw.presetId : base.presetId;
   const storedModel = typeof raw.compatModel === "string" ? raw.compatModel : base.compatModel;
+  const storedTokens =
+    typeof raw.maxTokens === "number" && Number.isFinite(raw.maxTokens)
+      ? raw.maxTokens
+      : base.maxTokens;
   // DeepSeek renamed its models; keep old saved settings working.
   const compatModel =
     presetId === "deepseek" && (storedModel === "deepseek-chat" || storedModel === "deepseek-reasoner")
@@ -92,14 +96,15 @@ function normalizeSettings(raw: unknown): Settings {
     customBaseUrl: typeof raw.customBaseUrl === "string" ? raw.customBaseUrl : base.customBaseUrl,
     keys,
     temperature: typeof raw.temperature === "number" ? raw.temperature : base.temperature,
-    maxTokens: typeof raw.maxTokens === "number" ? raw.maxTokens : base.maxTokens,
+    // Older releases defaulted to 1024, which truncates thinking before the answer.
+    maxTokens: storedTokens < 2048 ? base.maxTokens : storedTokens,
     thinking:
       raw.thinking === "on" || raw.thinking === "off" || raw.thinking === "auto"
         ? raw.thinking
         : base.thinking,
     showReasoning: typeof raw.showReasoning === "boolean" ? raw.showReasoning : base.showReasoning,
     backgroundDim:
-      typeof raw.backgroundDim === "number"
+      typeof raw.backgroundDim === "number" && Number.isFinite(raw.backgroundDim)
         ? Math.min(90, Math.max(0, raw.backgroundDim))
         : base.backgroundDim,
     systemPrompt: typeof raw.systemPrompt === "string" ? raw.systemPrompt : base.systemPrompt,
