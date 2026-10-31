@@ -1,5 +1,4 @@
-import type { ProviderKind } from "../../shared/models";
-import type { ChatMessage } from "../../shared/models";
+import type { ChatMessage, ProviderKind, ThinkingMode } from "../../shared/models";
 import { newId } from "./util";
 
 export interface MessageMeta {
@@ -13,6 +12,8 @@ export interface MessageRecord {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Chain of thought, kept apart from the answer so it can be collapsed. */
+  reasoning?: string;
   createdAt: number;
   meta?: MessageMeta;
   error?: string;
@@ -36,6 +37,9 @@ export interface Settings {
   keys: Record<string, string>;
   temperature: number;
   maxTokens: number;
+  thinking: ThinkingMode;
+  showReasoning: boolean;
+  backgroundDim: number;
   systemPrompt: string;
 }
 
@@ -47,11 +51,14 @@ export function defaultSettings(): Settings {
     provider: "workers-ai",
     workersModel: "",
     presetId: "deepseek",
-    compatModel: "deepseek-chat",
+    compatModel: "deepseek-flash",
     customBaseUrl: "",
     keys: {},
     temperature: 0.7,
-    maxTokens: 1024,
+    maxTokens: 4096,
+    thinking: "auto",
+    showReasoning: true,
+    backgroundDim: 65,
     systemPrompt: "",
   };
 }
@@ -66,6 +73,13 @@ function normalizeSettings(raw: unknown): Settings {
 
   const provider = raw.provider;
   const keys = isRecord(raw.keys) ? (raw.keys as Record<string, string>) : base.keys;
+  const presetId = typeof raw.presetId === "string" ? raw.presetId : base.presetId;
+  const storedModel = typeof raw.compatModel === "string" ? raw.compatModel : base.compatModel;
+  // DeepSeek renamed its models; keep old saved settings working.
+  const compatModel =
+    presetId === "deepseek" && (storedModel === "deepseek-chat" || storedModel === "deepseek-reasoner")
+      ? "deepseek-flash"
+      : storedModel;
 
   return {
     provider:
@@ -73,12 +87,21 @@ function normalizeSettings(raw: unknown): Settings {
         ? provider
         : base.provider,
     workersModel: typeof raw.workersModel === "string" ? raw.workersModel : base.workersModel,
-    presetId: typeof raw.presetId === "string" ? raw.presetId : base.presetId,
-    compatModel: typeof raw.compatModel === "string" ? raw.compatModel : base.compatModel,
+    presetId,
+    compatModel,
     customBaseUrl: typeof raw.customBaseUrl === "string" ? raw.customBaseUrl : base.customBaseUrl,
     keys,
     temperature: typeof raw.temperature === "number" ? raw.temperature : base.temperature,
     maxTokens: typeof raw.maxTokens === "number" ? raw.maxTokens : base.maxTokens,
+    thinking:
+      raw.thinking === "on" || raw.thinking === "off" || raw.thinking === "auto"
+        ? raw.thinking
+        : base.thinking,
+    showReasoning: typeof raw.showReasoning === "boolean" ? raw.showReasoning : base.showReasoning,
+    backgroundDim:
+      typeof raw.backgroundDim === "number"
+        ? Math.min(90, Math.max(0, raw.backgroundDim))
+        : base.backgroundDim,
     systemPrompt: typeof raw.systemPrompt === "string" ? raw.systemPrompt : base.systemPrompt,
   };
 }

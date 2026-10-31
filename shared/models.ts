@@ -7,6 +7,9 @@ export interface ChatMessage {
 
 export type ProviderKind = "workers-ai" | "openai-compatible" | "mock";
 
+/** Whether a request asks the model to think before answering. */
+export type ThinkingMode = "auto" | "on" | "off";
+
 export interface CompatPreset {
   id: string;
   label: string;
@@ -32,7 +35,7 @@ export const COMPAT_PRESETS: CompatPreset[] = [
     id: "deepseek",
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
-    models: ["deepseek-chat", "deepseek-reasoner"],
+    models: ["deepseek-flash", "deepseek-v4-pro"],
     keyUrl: "https://platform.deepseek.com/api_keys",
   },
   {

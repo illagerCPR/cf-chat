@@ -17,6 +17,9 @@ export interface Env {
 export type Delta =
   | { type: "meta"; data: Record<string, unknown> }
   | { type: "content"; value: string }
+  | { type: "reasoning"; value: string }
+  /** Clears what the browser already rendered, used before a retry. */
+  | { type: "reset" }
   | { type: "error"; message: string; code?: string };
 
 export class ProviderError extends Error {

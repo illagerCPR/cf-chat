@@ -21,7 +21,7 @@
 
 1. **浏览器只与自己的 Worker 通信**。第三方密钥经 Worker 转发，避免 CORS 与密钥暴露在跨域请求里。
 2. **Workers AI 的流式形状不统一**。`AI.run(..., { stream: true })` 现在返回 `ReadableStream`（二进制 SSE），历史版本还出现过 `{ response }` 对象流与纯文本流，`src/providers/workers-ai.ts` 会统一归一化；SSE 靠内容自动识别，不靠猜测。
-3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状（`choices[0].delta.content`），前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级）。
+3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状：正文走 `choices[0].delta.content`，思考过程走 `choices[0].delta.reasoning_content`，前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级、`reset` 重试清屏）。
 4. **不缓冲**。上游响应直接 `pipeThrough`/逐块转发，Worker 只是 I/O，不占 CPU（免费版 CPU 上限 10ms/次）。
 5. **客户端断开即取消**。前端 `AbortController` → `request.signal` → 上游 `fetch` 取消。
 
@@ -45,6 +45,7 @@ web/
   src/ui.ts               应用控制器（渲染、流式、设置面板）
   src/store.ts            设置与对话持久化
   src/api.ts              SSE 客户端
+  src/background.ts       背景图压缩与 IndexedDB 存取
   src/markdown.ts         marked + DOMPurify
   src/styles.css
 ```
@@ -72,23 +73,33 @@ web/
   "provider": "workers-ai" | "openai-compatible" | "mock",
   "presetId": "deepseek",          // 或 "custom"
   "baseUrl": "https://.../v1",     // 仅 custom 时使用
-  "model": "deepseek-chat",
+  "model": "deepseek-flash",
   "messages": [{ "role": "user", "content": "hi" }],
   "temperature": 0.7,
-  "maxTokens": 1024
+  "maxTokens": 4096,
+  "thinking": "auto" | "on" | "off"
 }
 ```
 
-校验规则：`messages` 1–100 条、单条 ≤20000 字符、合计 ≤120000 字符；`maxTokens` 上限 2048；`provider` 必须命中白名单。
+校验规则：`messages` 1–100 条、单条 ≤20000 字符、合计 ≤120000 字符；`maxTokens` 上限 8192；`provider` 必须命中白名单。
+
+思考开关的映射：
+
+- Workers AI：对 qwen3 / gemma-4 / glm-4 / nemotron 系列传 `chat_template_kwargs.enable_thinking`；其他模型忽略。
+- OpenAI 兼容（DeepSeek）：`thinking: { "type": "enabled" | "disabled" }`，仅当 Base URL 的主机名以 `deepseek.com` 结尾时附加。
+- `auto` 不传任何参数，跟随模型默认。
 
 响应：`text/event-stream`，事件体均为 `data: {...}`。
 
 ```
 data: {"cf-chat":{"provider":"workers-ai","model":"@cf/...","fallback":false}}
+data: {"choices":[{"index":0,"delta":{"reasoning_content":"先确认问题…"}}]}
 data: {"choices":[{"index":0,"delta":{"content":"你"}}]}
 data: {"choices":[{"index":0,"delta":{"content":"好"}}]}
 data: [DONE]
 ```
+
+如果默认模型只产出思考、没有正文，Worker 会先发 `{"cf-chat":{"reset":true}}` 清掉前端已渲染的内容，再发降级 meta 并用备用模型重试。
 
 出错（发生在流开始前）返回 JSON：`{ "error": { "code": "...", "message": "..." } }`，状态码透传上游（如 401/429）。流中途出错则以 `{"error": {...}}` 事件 + `[DONE]` 结束。
 
@@ -97,7 +108,8 @@ data: [DONE]
 - **Base URL 白名单**：浏览器只能提交预设 id 或 `custom` + 一个 https 公网地址；Worker 会拒绝内网地址（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`*.local` 等），避免接口被当成开放代理。
 - **模型名只接受字符串**，不参与 URL 拼接；密钥只经请求头传入，不写日志。
 - **限流**：使用 Workers 的 `ratelimits` binding（每边缘位置近似计数）。
-- **Markdown**：`marked` 输出经 DOMPurify 清洗，链接统一加 `rel="noopener noreferrer"`。
+- **Markdown**：`marked` 输出经 DOMPurify 清洗，链接统一加 `rel="noopener noreferrer"`；思考过程按纯文本写入 `textContent`，不经过 HTML 解析。
+- **背景图**：仅存于浏览器 IndexedDB（上传时压到最长边 1920px），不上传服务端。
 - **CSP**：`web/public/_headers` 里给出基础策略，静态资源由 Workers 直接托管。
 
 ## 加一个新的提供商

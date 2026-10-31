@@ -1,4 +1,4 @@
-import { findPreset, type ChatMessage, type ProviderKind } from "../shared/models";
+import { findPreset, type ChatMessage, type ProviderKind, type ThinkingMode } from "../shared/models";
 import { jsonError } from "./http";
 import { runMock } from "./providers/mock";
 import { runOpenAICompatible } from "./providers/openai-compatible";
@@ -10,8 +10,8 @@ const MAX_MESSAGES = 100;
 const MAX_MESSAGE_CHARS = 20_000;
 const MAX_TOTAL_CHARS = 120_000;
 const DEFAULT_TEMPERATURE = 0.7;
-const DEFAULT_MAX_TOKENS = 1024;
-const HARD_MAX_TOKENS = 2048;
+const DEFAULT_MAX_TOKENS = 4096;
+const HARD_MAX_TOKENS = 8192;
 
 interface ChatPayload {
   provider: ProviderKind;
@@ -21,6 +21,7 @@ interface ChatPayload {
   messages: ChatMessage[];
   temperature: number;
   maxTokens: number;
+  thinking: ThinkingMode;
 }
 
 interface CompatTarget {
@@ -106,6 +107,8 @@ export function parseChatRequest(raw: unknown): Parsed<ChatPayload> {
       maxTokens: Math.round(
         clampNumber(raw.maxTokens, 1, HARD_MAX_TOKENS, DEFAULT_MAX_TOKENS),
       ),
+      thinking:
+        raw.thinking === "on" || raw.thinking === "off" ? raw.thinking : "auto",
     },
   };
 }
@@ -206,7 +209,7 @@ async function* streamChat(options: {
 
   if (payload.provider === "mock") {
     yield { type: "meta", data: { provider: "mock", model: "mock", fallback: false } };
-    yield* runMock(payload.messages);
+    yield* runMock(payload.messages, payload.thinking);
     return;
   }
 
@@ -224,6 +227,7 @@ async function* streamChat(options: {
         messages: payload.messages,
         temperature: payload.temperature,
         maxTokens: payload.maxTokens,
+        thinking: payload.thinking,
       },
       signal,
     );
@@ -233,7 +237,8 @@ async function* streamChat(options: {
   const { model, fallbackModel } = options.workersAI;
   yield { type: "meta", data: { provider: "workers-ai", model, fallback: false } };
 
-  let emitted = false;
+  let contentEmitted = false;
+  let reasoningEmitted = false;
   try {
     for await (const delta of runWorkersAI(
       env,
@@ -242,15 +247,21 @@ async function* streamChat(options: {
         messages: payload.messages,
         temperature: payload.temperature,
         maxTokens: payload.maxTokens,
+        thinking: payload.thinking,
       },
       signal,
     )) {
-      emitted = true;
+      if (delta.type === "reasoning") reasoningEmitted = true;
+      else if (delta.type === "content") contentEmitted = true;
       yield delta;
     }
   } catch (error) {
     const retryable = error instanceof ProviderError ? error.retryable : true;
-    if (emitted || !retryable || !fallbackModel || fallbackModel === model) throw error;
+    if (contentEmitted || !retryable || !fallbackModel || fallbackModel === model) throw error;
+
+    // The browser already rendered the failed attempt's reasoning; clear it
+    // before the fallback model starts, or the visitor sees two thinking blocks.
+    if (reasoningEmitted) yield { type: "reset" };
 
     yield {
       type: "meta",
@@ -269,6 +280,7 @@ async function* streamChat(options: {
         messages: payload.messages,
         temperature: payload.temperature,
         maxTokens: payload.maxTokens,
+        thinking: payload.thinking,
       },
       signal,
     );

@@ -1,4 +1,4 @@
-import type { ChatMessage, CompatPreset, ProviderKind } from "../../shared/models";
+import type { ChatMessage, CompatPreset, ProviderKind, ThinkingMode } from "../../shared/models";
 
 export interface ChatRequestBody {
   provider: ProviderKind;
@@ -8,11 +8,14 @@ export interface ChatRequestBody {
   messages: ChatMessage[];
   temperature?: number;
   maxTokens?: number;
+  thinking?: ThinkingMode;
 }
 
 export type StreamEvent =
   | { type: "meta"; data: Record<string, unknown> }
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "reset" }
   | { type: "error"; message: string };
 
 export class ChatError extends Error {
@@ -57,14 +60,21 @@ function parseEvent(raw: string): ParsedEvent {
     const payload = JSON.parse(data) as Record<string, unknown>;
     const meta = payload["cf-chat"];
     if (meta && typeof meta === "object") {
-      return { type: "meta", data: meta as Record<string, unknown> };
+      const record = meta as Record<string, unknown>;
+      if (record.reset) return { type: "reset" };
+      return { type: "meta", data: record };
     }
     const error = payload.error as { message?: unknown } | undefined;
     if (error) {
       return { type: "error", message: String(error.message ?? "上游返回错误") };
     }
-    const choices = payload.choices as Array<{ delta?: { content?: unknown } }> | undefined;
-    const text = choices?.[0]?.delta?.content;
+    const choices = payload.choices as
+      | Array<{ delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }>
+      | undefined;
+    const delta = choices?.[0]?.delta;
+    const reasoning = delta?.reasoning_content ?? delta?.reasoning;
+    if (typeof reasoning === "string" && reasoning) return { type: "reasoning", text: reasoning };
+    const text = delta?.content;
     if (typeof text === "string" && text) return { type: "delta", text };
     return null;
   } catch {

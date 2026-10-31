@@ -1,6 +1,12 @@
 import { COMPAT_PRESETS, WORKERS_AI_MODELS, findPreset } from "../../shared/models";
 import type { ProviderKind } from "../../shared/models";
 import { ChatError, fetchCatalog, streamChat, type Catalog, type StreamEvent } from "./api";
+import {
+  applyBackground,
+  loadBackgroundImage,
+  prepareBackground,
+  saveBackgroundImage,
+} from "./background";
 import { decorateLinks, renderMarkdown } from "./markdown";
 import {
   createConversation,
@@ -60,6 +66,7 @@ export class App {
   private activeId: string | null = null;
   private controller: AbortController | null = null;
   private catalog: Catalog | null = null;
+  private backgroundImage: string | null = null;
 
   private readonly els: Elements = {
     sidebar: must("#sidebar"),
@@ -88,9 +95,15 @@ export class App {
     const { settings, persisted } = loadSettings();
     this.settings = settings;
 
-    const [conversations, catalog] = await Promise.all([loadConversations(), fetchCatalog()]);
+    const [conversations, catalog, background] = await Promise.all([
+      loadConversations(),
+      fetchCatalog(),
+      loadBackgroundImage(),
+    ]);
     this.conversations = conversations;
     this.catalog = catalog;
+    this.backgroundImage = background;
+    if (background) applyBackground(background, this.settings.backgroundDim);
 
     // With no saved preferences and a demo-capable server (local dev), start in
     // demo mode so the page works before a Cloudflare account exists.
@@ -177,6 +190,27 @@ export class App {
 
   }
 
+  private buildThinkingBlock(reasoning: string, streaming: boolean): HTMLDetailsElement {
+    const details = document.createElement("details");
+    details.className = "thinking";
+    details.open = streaming;
+
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.className = "thinking-label";
+    label.textContent = streaming ? "思考中…" : "思考过程";
+    const count = document.createElement("span");
+    count.className = "thinking-count";
+    count.textContent = reasoning ? `${reasoning.length} 字` : "";
+    summary.append(label, count);
+
+    const text = document.createElement("div");
+    text.className = "thinking-text";
+    text.textContent = reasoning;
+    details.append(summary, text);
+    return details;
+  }
+
   private buildMessage(record: MessageRecord, isLast = false): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = `msg ${record.role}`;
@@ -194,6 +228,10 @@ export class App {
     body.className = "body";
 
     if (record.role === "assistant") {
+      if (this.settings.showReasoning && record.reasoning?.trim()) {
+        body.append(this.buildThinkingBlock(record.reasoning, false));
+      }
+
       const prose = document.createElement("div");
       prose.className = "prose";
       prose.innerHTML = renderMarkdown(record.content);
@@ -391,12 +429,18 @@ export class App {
     this.els.messages.append(node);
     this.scrollToBottom(true);
 
+    const body = node.querySelector<HTMLElement>(".body");
     const prose = node.querySelector<HTMLElement>(".prose");
     const controller = new AbortController();
     this.controller = controller;
     this.setStreaming(true);
 
     let buffer = "";
+    let reasoning = "";
+    let thinking: HTMLDetailsElement | null = null;
+    let thinkingText: HTMLElement | null = null;
+    let thinkingLabel: HTMLElement | null = null;
+    let thinkingCount: HTMLElement | null = null;
     let meta: MessageMeta | undefined;
     let stopped = false;
 
@@ -407,6 +451,34 @@ export class App {
       this.scrollToBottom();
     }, 70);
 
+    const flushReasoning = throttle(() => {
+      if (!thinkingText) return;
+      thinkingText.textContent = reasoning;
+      if (thinkingCount) thinkingCount.textContent = `${reasoning.length} 字`;
+      this.scrollToBottom();
+    }, 80);
+
+    const ensureThinking = (): void => {
+      if (!this.settings.showReasoning || thinking || !body || !prose) return;
+      thinking = this.buildThinkingBlock("", true);
+      thinkingText = thinking.querySelector<HTMLElement>(".thinking-text");
+      thinkingLabel = thinking.querySelector<HTMLElement>(".thinking-label");
+      thinkingCount = thinking.querySelector<HTMLElement>(".thinking-count");
+      body.insertBefore(thinking, prose);
+    };
+
+    const clearStream = (): void => {
+      buffer = "";
+      reasoning = "";
+      if (prose) prose.innerHTML = "";
+      thinking?.remove();
+      thinking = null;
+      thinkingText = null;
+      thinkingLabel = null;
+      thinkingCount = null;
+      meta = undefined;
+    };
+
     try {
       for await (const event of streamChat(
         this.buildRequest(conversation, assistant),
@@ -414,10 +486,27 @@ export class App {
         controller.signal,
       )) {
         this.handleEvent(event, {
+          onReasoning: (text) => {
+            const first = !reasoning;
+            reasoning += text;
+            ensureThinking();
+            flushReasoning();
+            if (first) this.showStatus("正在思考…");
+          },
           onDelta: (text) => {
+            const first = !buffer;
+            if (first && thinking?.open) {
+              thinking.open = false;
+              if (thinkingLabel) thinkingLabel.textContent = "思考过程";
+            }
             buffer += text;
             if (prose) prose.classList.add("cursor");
             flush();
+            if (first) this.showStatus("正在生成…");
+          },
+          onReset: () => {
+            clearStream();
+            if (prose) prose.classList.remove("cursor");
           },
           onMeta: (data) => {
             meta = { model: String(data.model ?? ""), provider: String(data.provider ?? "") };
@@ -443,6 +532,7 @@ export class App {
       }
     } finally {
       assistant.content = buffer;
+      if (reasoning.trim()) assistant.reasoning = reasoning;
       if (meta) assistant.meta = meta;
       if (stopped) {
         assistant.meta = { ...(meta ?? { model: "", provider: "" }), reason: "stopped" } as MessageMeta;
@@ -469,13 +559,29 @@ export class App {
     event: StreamEvent,
     handlers: {
       onDelta: (text: string) => void;
+      onReasoning: (text: string) => void;
+      onReset: () => void;
       onMeta: (data: Record<string, unknown>) => void;
       onError: (message: string) => void;
     },
   ): void {
-    if (event.type === "delta") handlers.onDelta(event.text);
-    else if (event.type === "meta") handlers.onMeta(event.data);
-    else handlers.onError(event.message);
+    switch (event.type) {
+      case "delta":
+        handlers.onDelta(event.text);
+        break;
+      case "reasoning":
+        handlers.onReasoning(event.text);
+        break;
+      case "reset":
+        handlers.onReset();
+        break;
+      case "meta":
+        handlers.onMeta(event.data);
+        break;
+      case "error":
+        handlers.onError(event.message);
+        break;
+    }
   }
 
   private buildRequest(conversation: Conversation, _assistant: MessageRecord) {
@@ -484,6 +590,7 @@ export class App {
       messages,
       temperature: this.settings.temperature,
       maxTokens: this.settings.maxTokens,
+      thinking: this.settings.thinking,
     };
 
     if (this.settings.provider === "workers-ai") {
@@ -668,8 +775,42 @@ export class App {
             </div>
             <div class="field">
               <label for="set-tokens">最大回复 tokens</label>
-              <input id="set-tokens" type="number" min="64" max="2048" step="64" />
+              <input id="set-tokens" type="number" min="64" max="8192" step="64" />
+              <p class="hint">思考内容也计入这里；开启思考建议 4096 以上。</p>
             </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="set-thinking">思考模式</label>
+              <select id="set-thinking">
+                <option value="auto">自动（跟随模型）</option>
+                <option value="on">开启</option>
+                <option value="off">关闭</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>思考过程</label>
+              <label class="check-row">
+                <input id="set-show-reasoning" type="checkbox" />
+                <span>在回复上方显示</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="set-bg-file">背景图片</label>
+            <div class="file-row">
+              <input id="set-bg-file" type="file" accept="image/*" />
+              <button type="button" class="text-btn" id="set-bg-remove">移除</button>
+            </div>
+            <img id="set-bg-preview" class="bg-preview" alt="背景预览" hidden />
+            <div class="range-row">
+              <span class="hint">遮罩</span>
+              <input id="set-bg-dim" type="range" min="0" max="90" step="5" />
+              <output id="bg-dim-value"></output>
+            </div>
+            <p class="hint" id="bg-hint">图片只保存在本浏览器，上传时自动压缩。</p>
           </div>
 
           <div class="field">
@@ -696,6 +837,14 @@ export class App {
     const tempInput = dialog.querySelector<HTMLInputElement>("#set-temp");
     const tempValue = dialog.querySelector<HTMLOutputElement>("#temp-value");
     const tokensInput = dialog.querySelector<HTMLInputElement>("#set-tokens");
+    const thinkingSelect = dialog.querySelector<HTMLSelectElement>("#set-thinking");
+    const showReasoningInput = dialog.querySelector<HTMLInputElement>("#set-show-reasoning");
+    const bgFile = dialog.querySelector<HTMLInputElement>("#set-bg-file");
+    const bgRemove = dialog.querySelector<HTMLButtonElement>("#set-bg-remove");
+    const bgPreview = dialog.querySelector<HTMLImageElement>("#set-bg-preview");
+    const bgDimInput = dialog.querySelector<HTMLInputElement>("#set-bg-dim");
+    const bgDimValue = dialog.querySelector<HTMLOutputElement>("#bg-dim-value");
+    const bgHint = dialog.querySelector<HTMLElement>("#bg-hint");
     const systemInput = dialog.querySelector<HTMLTextAreaElement>("#set-system");
     const closeButton = dialog.querySelector<HTMLButtonElement>("[data-close]");
 
@@ -713,6 +862,14 @@ export class App {
       !tempInput ||
       !tempValue ||
       !tokensInput ||
+      !thinkingSelect ||
+      !showReasoningInput ||
+      !bgFile ||
+      !bgRemove ||
+      !bgPreview ||
+      !bgDimInput ||
+      !bgDimValue ||
+      !bgHint ||
       !systemInput ||
       !closeButton
     ) {
@@ -730,7 +887,18 @@ export class App {
     tempInput.value = String(this.settings.temperature);
     tempValue.textContent = this.settings.temperature.toFixed(1);
     tokensInput.value = String(this.settings.maxTokens);
+    thinkingSelect.value = this.settings.thinking;
+    showReasoningInput.checked = this.settings.showReasoning;
+    bgDimInput.value = String(this.settings.backgroundDim);
+    bgDimValue.textContent = `${this.settings.backgroundDim}%`;
+    if (this.backgroundImage) {
+      bgPreview.src = this.backgroundImage;
+      bgPreview.hidden = false;
+    }
     systemInput.value = this.settings.systemPrompt;
+
+    /** undefined = unchanged, null = remove the current image. */
+    let pendingBackground: string | null | undefined;
 
     const syncSections = (): void => {
       const provider = providerSelect.value as ProviderKind;
@@ -768,34 +936,80 @@ export class App {
     tempInput.addEventListener("input", () => {
       tempValue.textContent = Number(tempInput.value).toFixed(1);
     });
+    bgDimInput.addEventListener("input", () => {
+      bgDimValue.textContent = `${bgDimInput.value}%`;
+    });
+    bgFile.addEventListener("change", () => {
+      const file = bgFile.files?.[0];
+      if (!file) return;
+      bgHint.textContent = "正在处理图片…";
+      void prepareBackground(file)
+        .then((dataUrl) => {
+          pendingBackground = dataUrl;
+          bgPreview.src = dataUrl;
+          bgPreview.hidden = false;
+          bgHint.textContent = "已选择新图片，保存后生效。";
+        })
+        .catch((error: unknown) => {
+          bgHint.textContent = error instanceof Error ? error.message : "图片处理失败。";
+        });
+    });
+    bgRemove.addEventListener("click", () => {
+      pendingBackground = null;
+      bgPreview.hidden = true;
+      bgPreview.removeAttribute("src");
+      bgHint.textContent = "保存后移除背景。";
+    });
     closeButton.addEventListener("click", () => dialog.close());
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const keys = { ...this.settings.keys };
-      const typedKey = keyInput.value.trim();
-      if (typedKey) keys[presetSelect.value] = typedKey;
-      else delete keys[presetSelect.value];
+      void (async () => {
+        const keys = { ...this.settings.keys };
+        const typedKey = keyInput.value.trim();
+        if (typedKey) keys[presetSelect.value] = typedKey;
+        else delete keys[presetSelect.value];
 
-      const temperature = Number(tempInput.value);
-      const maxTokens = Number(tokensInput.value);
+        const temperature = Number(tempInput.value);
+        const maxTokens = Number(tokensInput.value);
+        const dim = Number(bgDimInput.value);
+        const thinkingValue = thinkingSelect.value;
 
-      this.settings = {
-        ...this.settings,
-        provider: providerSelect.value as ProviderKind,
-        workersModel: workersInput.value.trim(),
-        presetId: presetSelect.value,
-        compatModel: modelInput.value.trim(),
-        customBaseUrl: baseUrlInput.value.trim(),
-        keys,
-        temperature: Number.isFinite(temperature) ? Math.min(2, Math.max(0, temperature)) : 0.7,
-        maxTokens: Number.isFinite(maxTokens) ? Math.min(2048, Math.max(64, maxTokens)) : 1024,
-        systemPrompt: systemInput.value,
-      };
-      saveSettings(this.settings);
-      dialog.close();
-      this.updateChrome();
-      this.renderEmptyIfEmpty();
+        if (pendingBackground !== undefined) {
+          try {
+            await saveBackgroundImage(pendingBackground);
+            this.backgroundImage = pendingBackground;
+          } catch {
+            bgHint.textContent = "背景保存失败，可能是浏览器存储已满。";
+            return;
+          }
+        }
+
+        this.settings = {
+          ...this.settings,
+          provider: providerSelect.value as ProviderKind,
+          workersModel: workersInput.value.trim(),
+          presetId: presetSelect.value,
+          compatModel: modelInput.value.trim(),
+          customBaseUrl: baseUrlInput.value.trim(),
+          keys,
+          temperature: Number.isFinite(temperature) ? Math.min(2, Math.max(0, temperature)) : 0.7,
+          maxTokens: Number.isFinite(maxTokens) ? Math.min(8192, Math.max(64, maxTokens)) : 4096,
+          thinking:
+            thinkingValue === "on" || thinkingValue === "off" ? thinkingValue : "auto",
+          showReasoning: showReasoningInput.checked,
+          backgroundDim: Number.isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 65,
+          systemPrompt: systemInput.value,
+        };
+        saveSettings(this.settings);
+        applyBackground(this.backgroundImage, this.settings.backgroundDim);
+        dialog.close();
+        this.updateChrome();
+
+        const conversation = this.activeConversation();
+        if (conversation && !this.controller) this.renderConversation(conversation);
+        else this.renderEmptyIfEmpty();
+      })();
     });
 
     syncPreset();

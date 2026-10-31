@@ -5,8 +5,10 @@
 ## 特性
 
 - **流式输出**：逐字到达，可随时中断，Markdown 与代码块正常渲染
+- **思考过程**：支持思考的模型会把推理过程单独显示在可折叠面板里，可开关、可隐藏
+- **自定义背景**：在设置里上传一张图片作为页面背景，遮罩强度可调，图片只存在本机
 - **默认零配置**：部署后直接用 Workers AI 对话，访客不需要密钥
-- **自带密钥（BYOK）**：OpenAI、DeepSeek、Moonshot、智谱 GLM、SiliconFlow、OpenRouter 以及任意 OpenAI 兼容服务
+- **自带密钥（BYOK）**：OpenAI、DeepSeek（`deepseek-flash` / `deepseek-v4-pro`）、Moonshot、智谱 GLM、SiliconFlow、OpenRouter 以及任意 OpenAI 兼容服务
 - **自动降级**：默认模型不可用时自动换到备用模型，并在回复下方标注
 - **多会话**：历史对话保存在本浏览器（IndexedDB），支持切换、删除、重新生成
 - **单 Worker 部署**：静态页面免费，接口与页面同域，没有 CORS 问题
@@ -50,6 +52,8 @@ https://cf-chat.<你的 workers.dev 子域>.workers.dev
 
 - **提供商 · Workers AI**：无需密钥。模型留空即使用服务端默认模型。
 - **提供商 · OpenAI 兼容**：选择服务商、填入自己的 API Key 和模型名称。自定义服务填 Base URL（必须 https，接口需兼容 `/chat/completions`）。
+- **思考模式**：可选「自动 / 开启 / 关闭」。自动跟随模型默认；开启后推理过程会显示在回复上方，可折叠。思考内容也计入「最大回复 tokens」。
+- **背景图片**：选择本地图片即可，浏览器会先压缩再存入 IndexedDB，换设备不会同步。
 
 API Key 只保存在当前浏览器的 localStorage，不会写入服务端存储。对话内容同理，只存在本机。
 
@@ -74,6 +78,7 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 - Workers AI 免费额度为 10000 Neurons/天（`00:00 UTC` 重置），额度用尽后对话会失败
 - 默认的 `qwen3-30b-a3b-fp8` 是 MoE 模型，中文表现不错；如果想更省额度可以换回 `@cf/google/gemma-2b-it-lora`（2B，中文较弱）
 - `@cf/google/gemma-3-12b-it` 等部分模型需要账户具备权限，免费账户可能返回 `5018: This account is not allowed to access …`
+- 思考内容计入输出 tokens；默认模型开思考时，每轮消耗的 Neurons 约为关闭时的数倍，免费额度用得更快
 - 上下文只截取最近 20 条消息，长对话不会无限增长
 - 对话不跨设备同步（没有账号系统）
 

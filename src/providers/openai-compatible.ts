@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../../shared/models";
+import type { ChatMessage, ThinkingMode } from "../../shared/models";
 import { ProviderError, truncate, type Delta } from "../types";
 
 export interface CompatInput {
@@ -8,6 +8,7 @@ export interface CompatInput {
   messages: ChatMessage[];
   temperature: number;
   maxTokens: number;
+  thinking: ThinkingMode;
 }
 
 const EVENT_SEPARATOR = /\r?\n\r?\n/;
@@ -19,7 +20,8 @@ function endpoint(baseUrl: string): URL {
 
 interface ParsedEvent {
   done: boolean;
-  text?: string;
+  content?: string;
+  reasoning?: string;
   error?: string;
 }
 
@@ -45,8 +47,13 @@ function parseEvent(raw: string): ParsedEvent {
     if (!choice) return { done: false };
     const delta = choice.delta as Record<string, unknown> | undefined;
     const message = choice.message as Record<string, unknown> | undefined;
-    const text = delta?.content ?? message?.content;
-    return { done: false, text: typeof text === "string" ? text : "" };
+    const reasoning = delta?.reasoning_content ?? delta?.reasoning ?? message?.reasoning_content ?? message?.reasoning;
+    const content = delta?.content ?? message?.content;
+    return {
+      done: false,
+      reasoning: typeof reasoning === "string" ? reasoning : "",
+      content: typeof content === "string" ? content : "",
+    };
   } catch {
     // Keep-alive comments and partial JSON are not interesting.
     return { done: false };
@@ -67,11 +74,31 @@ async function readError(response: Response): Promise<string> {
   return truncate(text);
 }
 
+/** DeepSeek toggles thinking with a top-level `thinking` object. */
+export function isDeepSeek(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.endsWith("deepseek.com");
+  } catch {
+    return false;
+  }
+}
+
 /** Streams an OpenAI-compatible chat completion, re-emitting deltas verbatim. */
 export async function* runOpenAICompatible(
   input: CompatInput,
   signal: AbortSignal,
 ): AsyncGenerator<Delta> {
+  const body: Record<string, unknown> = {
+    model: input.model,
+    messages: input.messages,
+    temperature: input.temperature,
+    max_tokens: input.maxTokens,
+    stream: true,
+  };
+  if (input.thinking !== "auto" && isDeepSeek(input.baseUrl)) {
+    body.thinking = { type: input.thinking === "on" ? "enabled" : "disabled" };
+  }
+
   const response = await fetch(endpoint(input.baseUrl), {
     method: "POST",
     headers: {
@@ -79,13 +106,7 @@ export async function* runOpenAICompatible(
       accept: "text/event-stream",
       authorization: `Bearer ${input.apiKey}`,
     },
-    body: JSON.stringify({
-      model: input.model,
-      messages: input.messages,
-      temperature: input.temperature,
-      max_tokens: input.maxTokens,
-      stream: true,
-    }),
+    body: JSON.stringify(body),
     signal,
   });
 
@@ -100,6 +121,9 @@ export async function* runOpenAICompatible(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let contentEmitted = false;
+  let reasoningEmitted = false;
+  let finished = false;
 
   try {
     while (true) {
@@ -113,17 +137,45 @@ export async function* runOpenAICompatible(
         buffer = buffer.slice(match.index + match[0].length);
 
         const event = parseEvent(rawEvent);
-        if (event.done) return;
+        if (event.done) {
+          finished = true;
+          buffer = "";
+          break;
+        }
         if (event.error) throw new ProviderError(event.error, 502, "upstream_error");
-        if (event.text) yield { type: "content", value: event.text };
+        if (event.reasoning) {
+          reasoningEmitted = true;
+          yield { type: "reasoning", value: event.reasoning };
+        }
+        if (event.content) {
+          contentEmitted = true;
+          yield { type: "content", value: event.content };
+        }
 
         match = EVENT_SEPARATOR.exec(buffer);
       }
+      if (finished) break;
     }
 
-    const tail = parseEvent(buffer);
-    if (tail.text) yield { type: "content", value: tail.text };
-    if (tail.error) throw new ProviderError(tail.error, 502, "upstream_error");
+    if (!finished) {
+      const tail = parseEvent(buffer);
+      if (tail.reasoning) {
+        reasoningEmitted = true;
+        yield { type: "reasoning", value: tail.reasoning };
+      }
+      if (tail.content) {
+        contentEmitted = true;
+        yield { type: "content", value: tail.content };
+      }
+      if (tail.error) throw new ProviderError(tail.error, 502, "upstream_error");
+    }
+    if (reasoningEmitted && !contentEmitted) {
+      throw new ProviderError(
+        "模型只生成了思考内容，没有正文（可能已达到最大 tokens）。",
+        502,
+        "thinking_only",
+      );
+    }
   } finally {
     reader.cancel().catch(() => undefined);
   }

@@ -10,6 +10,14 @@ function frame(delta: Delta): string {
       return `data: ${JSON.stringify({
         choices: [{ index: 0, delta: { content: delta.value } }],
       })}\n\n`;
+    case "reasoning":
+      // OpenAI-compatible field used by DeepSeek and Qwen; the browser reads it
+      // separately from `content` so it can render a collapsible thinking block.
+      return `data: ${JSON.stringify({
+        choices: [{ index: 0, delta: { reasoning_content: delta.value } }],
+      })}\n\n`;
+    case "reset":
+      return `data: ${JSON.stringify({ "cf-chat": { reset: true } })}\n\n`;
     case "error":
       return `data: ${JSON.stringify({
         error: { message: delta.message, code: delta.code ?? "upstream_error" },
