@@ -271,7 +271,7 @@ export class App {
         line.textContent = formatUsageLine(usage);
         line.title = usage.estimated
           ? "按字符估算，不是模型返回的精确计数"
-          : "由提供商返回的精确用量（输入为这一轮携带的完整上下文）";
+          : "由提供商返回的精确用量（输入为这一轮发给模型的全部内容）";
         body.append(line);
       }
 
@@ -367,8 +367,8 @@ export class App {
     element.textContent = formatConversationUsage(stats);
     element.title = [
       `输入合计 ${stats.promptTokens} · 输出合计 ${stats.completionTokens}`,
-      `当前上下文 ${stats.contextTokens}`,
-      "每轮都会重新携带历史，所以累计大于上下文；≈ 表示全部按字符估算，含估算表示部分数字是估算",
+      `本轮输入 ${stats.contextTokens}`,
+      "每轮都会重新携带历史，所以累计大于本轮输入；≈ 表示全部按字符估算，含估算表示部分数字是估算",
     ].join(" · ");
   }
 

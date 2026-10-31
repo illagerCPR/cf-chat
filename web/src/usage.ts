@@ -76,7 +76,7 @@ export function formatUsageLine(usage: Usage): string {
   )} · 共 ${formatTokens(usage.totalTokens)} tokens`;
 }
 
-/** Conversation footer, e.g. "本对话 3 轮 · 累计 1,820 tokens · 上下文 1,204". */
+/** Conversation footer, e.g. "本对话 3 轮 · 累计 1,820 tokens · 本轮输入 1,204". */
 export function formatConversationUsage(stats: ConversationUsage): string {
   const allEstimated = stats.estimatedReplies === stats.replies;
   const mixed = stats.estimatedReplies > 0 && !allEstimated;
@@ -84,5 +84,5 @@ export function formatConversationUsage(stats: ConversationUsage): string {
   const suffix = mixed ? " · 含估算" : "";
   return `${approx}本对话 ${stats.replies} 轮 · 累计 ${formatTokens(
     stats.totalTokens,
-  )} tokens · 上下文 ${formatTokens(stats.contextTokens)}${suffix}`;
+  )} tokens · 本轮输入 ${formatTokens(stats.contextTokens)}${suffix}`;
 }

@@ -116,7 +116,7 @@ data: [DONE]
 - **Workers AI**：实测 qwen3 会在分片里带 `usage`，但同一个流里会出现多次（首个是 0/0/0 的占位），只取最后一个非零值并在结束时统一发一帧。没有 usage 的模型（例如部分 prompt 风格模型）退化为估算。
 - **估算规则**（`shared/tokens.ts`）：CJK 字符约 0.6 token/字、ASCII 约 0.3 token/字符、emoji 约 2 token/个，每条消息再加 4 token 的结构开销，整体 +3。误差通常在一两成以内，够用来判断额度消耗，不应当拿来做精确计费。
 
-`completionTokens` 包含思考内容（DeepSeek 同时给出 `reasoningTokens`）。前端把 usage 随消息存进 IndexedDB；旧消息、被中断的流没有服务端数据时，在 `web/src/usage.ts` 里按同一套规则本地估算，并标 `≈`（整段对话里如果只有部分回复是估算的，改标「含估算」）。整段对话的「累计」是各轮 `promptTokens + completionTokens` 求和，因为每轮都会重新携带历史，它天然大于「上下文」。
+`completionTokens` 包含思考内容（DeepSeek 同时给出 `reasoningTokens`）。前端把 usage 随消息存进 IndexedDB；旧消息、被中断的流没有服务端数据时，在 `web/src/usage.ts` 里按同一套规则本地估算，并标 `≈`（整段对话里如果只有部分回复是估算的，改标「含估算」）。整段对话的「累计」是各轮 `promptTokens + completionTokens` 求和，因为每轮都会重新携带历史，它天然大于「本轮输入」。
 
 ## 安全边界
 
