@@ -15,6 +15,9 @@ export interface GeneratedImage {
   /** Base64 payload without the `data:` prefix. */
   base64: string;
   mimeType: string;
+  /** Real pixel size read from the bytes; null when the format is unknown. */
+  width?: number;
+  height?: number;
 }
 
 const DEFAULT_MIME = "image/png";
@@ -28,6 +31,96 @@ export function sniffMime(base64: string): string {
   return DEFAULT_MIME;
 }
 
+/**
+ * Reads the real pixel size out of the encoded bytes.
+ *
+ * The requested width/height is only a hint: `flux-1-schnell` ignores it
+ * entirely and always answers 1024x1024, so reporting the requested size would
+ * make the browser reserve the wrong aspect ratio and letterbox the picture.
+ * Returns null when the format is not recognised, and the caller then falls
+ * back to what it asked for.
+ */
+export function readImageSize(bytes: Uint8Array): { width: number; height: number } | null {
+  // PNG: 8-byte signature, then an IHDR chunk with width/height as big-endian u32.
+  if (
+    bytes.length > 24 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+  }
+
+  // GIF: "GIF87a"/"GIF89a", then little-endian u16 width/height.
+  if (bytes.length > 10 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: view.getUint16(6, true), height: view.getUint16(8, true) };
+  }
+
+  // WebP: RIFF container; VP8X stores canvas size minus one as 24-bit LE.
+  if (
+    bytes.length > 30 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    const chunk = String.fromCharCode(bytes[12], bytes[13], bytes[14], bytes[15]);
+    if (chunk === "VP8X") {
+      const width = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+      const height = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+      return { width, height };
+    }
+    if (chunk === "VP8 ") {
+      const width = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
+      const height = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
+      return { width, height };
+    }
+    if (chunk === "VP8L") {
+      const bits = bytes[21] | (bytes[22] << 8) | (bytes[23] << 16) | (bytes[24] << 24);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+    }
+  }
+
+  // JPEG: walk the segment chain until a start-of-frame marker.
+  if (bytes.length > 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = bytes[offset + 1];
+      // SOF0..SOF15, excluding DHT (0xc4), JPG (0xc8) and DAC (0xcc).
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        const height = (bytes[offset + 5] << 8) | bytes[offset + 6];
+        const width = (bytes[offset + 7] << 8) | bytes[offset + 8];
+        return { width, height };
+      }
+      const length = (bytes[offset + 2] << 8) | bytes[offset + 3];
+      if (length < 2) return null;
+      offset += 2 + length;
+    }
+  }
+
+  return null;
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 function toBase64(bytes: Uint8Array): string {
   // Chunked so a multi-megabyte image does not blow the argument limit of
   // String.fromCharCode.
@@ -39,21 +132,22 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function fromBytes(bytes: Uint8Array, declaredType?: string): GeneratedImage | null {
+  if (!bytes.length) return null;
+  const base64 = toBase64(bytes);
+  const size = readImageSize(bytes);
+  return {
+    base64,
+    mimeType: declaredType || sniffMime(base64),
+    ...(size ? { width: size.width, height: size.height } : {}),
+  };
+}
+
 async function readBinary(value: unknown): Promise<GeneratedImage | null> {
-  if (value instanceof ArrayBuffer) {
-    const bytes = new Uint8Array(value);
-    return bytes.length ? { base64: toBase64(bytes), mimeType: sniffMime(toBase64(bytes)) } : null;
-  }
-  if (value instanceof Uint8Array) {
-    return value.length
-      ? { base64: toBase64(value), mimeType: sniffMime(toBase64(value)) }
-      : null;
-  }
+  if (value instanceof ArrayBuffer) return fromBytes(new Uint8Array(value));
+  if (value instanceof Uint8Array) return fromBytes(value);
   if (value instanceof Blob) {
-    const buffer = new Uint8Array(await value.arrayBuffer());
-    if (!buffer.length) return null;
-    const base64 = toBase64(buffer);
-    return { base64, mimeType: value.type || sniffMime(base64) };
+    return fromBytes(new Uint8Array(await value.arrayBuffer()), value.type);
   }
   return null;
 }
@@ -99,8 +193,7 @@ async function extractImage(result: unknown): Promise<GeneratedImage | null> {
         merged.set(chunk, offset);
         offset += chunk.length;
       }
-      const base64 = toBase64(merged);
-      return { base64, mimeType: sniffMime(base64) };
+      return fromBytes(merged);
     }
 
     const image = record.image;
@@ -109,7 +202,13 @@ async function extractImage(result: unknown): Promise<GeneratedImage | null> {
       const comma = image.startsWith("data:") ? image.indexOf(",") : -1;
       const base64 = comma >= 0 ? image.slice(comma + 1) : image;
       const declared = comma >= 0 ? image.slice(5, comma).split(";")[0] : "";
-      return { base64, mimeType: declared || sniffMime(base64) };
+      // Decode just enough to read the header; the payload itself stays base64.
+      const size = readImageSize(base64ToBytes(base64.slice(0, 4096)));
+      return {
+        base64,
+        mimeType: declared || sniffMime(base64),
+        ...(size ? { width: size.width, height: size.height } : {}),
+      };
     }
 
     const nested = await readBinary(record.data);

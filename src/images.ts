@@ -264,15 +264,19 @@ export async function handleImage(request: Request, env: Env): Promise<Response>
           },
           request.signal,
         );
-        images.push({ ...image, width, height });
+        images.push({
+          ...image,
+          width: image.width ?? width,
+          height: image.height ?? height,
+        });
       }
       return json({
         images,
         meta: {
           provider: "openai-compatible",
           model: target.model,
-          width,
-          height,
+          width: images[0].width,
+          height: images[0].height,
           neurons: 0,
         },
       });
@@ -309,18 +313,25 @@ export async function handleImage(request: Request, env: Env): Promise<Response>
         },
         request.signal,
       );
-      images.push({ ...image, width, height });
+      // The requested size is only a hint: flux-1-schnell ignores it and always
+      // answers 1024x1024, so the real size from the bytes wins when available.
+      images.push({
+        ...image,
+        width: image.width ?? width,
+        height: image.height ?? height,
+      });
     }
 
+    const actual = images[0];
     return json({
       images,
       meta: {
         provider: "workers-ai",
         model: spec.id,
-        width,
-        height,
+        width: actual.width,
+        height: actual.height,
         steps,
-        neurons: estimateNeurons(spec, width, height, steps) * payload.count,
+        neurons: estimateNeurons(spec, actual.width, actual.height, steps) * payload.count,
       },
     });
   } catch (error) {

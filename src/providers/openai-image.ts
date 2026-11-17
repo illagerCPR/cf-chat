@@ -1,6 +1,11 @@
 import type { ImageModelSpec } from "../../shared/images";
 import { ProviderError, truncate } from "../types";
-import { sniffMime, type GeneratedImage, type ImageRequest } from "./workers-ai-image";
+import {
+  readImageSize,
+  sniffMime,
+  type GeneratedImage,
+  type ImageRequest,
+} from "./workers-ai-image";
 
 export interface CompatImageInput {
   baseUrl: string;
@@ -106,5 +111,16 @@ export async function runCompatImage(
     );
   }
 
-  return { base64, mimeType: sniffMime(base64) };
+  // Read the real size from the header: the endpoint may ignore `size`.
+  const head = base64.slice(0, 4096);
+  const binary = atob(head);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const size = readImageSize(bytes);
+
+  return {
+    base64,
+    mimeType: sniffMime(base64),
+    ...(size ? { width: size.width, height: size.height } : {}),
+  };
 }
