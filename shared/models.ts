@@ -75,22 +75,27 @@ export interface WorkersAIModel {
   note: string;
 }
 
-/** Curated Workers AI models. Any model id can still be typed in by hand. */
+/**
+ * Curated Workers AI models. Any model id can still be typed in by hand.
+ *
+ * `@cf/qwen/qwen3-30b-a3b-fp8` and `@cf/google/gemma-2b-it-lora` were retired on
+ * 2026-11-20 (HTTP 410 / code 5028), so they are gone from this list.
+ */
 export const WORKERS_AI_MODELS: WorkersAIModel[] = [
   {
-    id: "@cf/qwen/qwen3-30b-a3b-fp8",
-    label: "Qwen3 30B A3B",
-    note: "默认模型，中文表现好、成本低",
+    id: "@cf/qwen/qwen3.8-27b",
+    label: "Qwen 3.8 27B",
+    note: "默认模型，中文好、支持思考与读图",
+  },
+  {
+    id: "@cf/google/gemma-4-26b-a4b-it",
+    label: "Gemma 4 26B A4B",
+    note: "降级目标，MoE 架构、单价低",
   },
   {
     id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     label: "Llama 3.3 70B",
-    note: "降级目标，质量更高，神经元消耗也更高",
-  },
-  {
-    id: "@cf/google/gemma-2b-it-lora",
-    label: "Gemma 2B IT (LoRA)",
-    note: "2B 参数，Beta 阶段免费，中文较弱",
+    note: "质量更高，神经元消耗也更高",
   },
   {
     id: "@cf/openai/gpt-oss-20b",
@@ -98,11 +103,39 @@ export const WORKERS_AI_MODELS: WorkersAIModel[] = [
     note: "OpenAI 开源模型，通用性不错",
   },
   {
-    id: "@cf/google/gemma-4-26b-a4b-it",
-    label: "Gemma 4 26B A4B",
-    note: "新一代 Gemma，单价低",
+    id: "@cf/zai-org/glm-4.7-flash",
+    label: "GLM-4.7 Flash",
+    note: "便宜、响应快，适合日常问答",
   },
 ];
+
+/**
+ * Models retired on 2026-11-20 (HTTP 410 / code 5028) mapped to their closest
+ * surviving replacement. Saved browser settings may still name one of these, so
+ * the frontend rewrites them instead of letting every request fail.
+ */
+export const RETIRED_WORKERS_AI_MODELS: Record<string, string> = {
+  "@cf/qwen/qwen3-30b-a3b-fp8": "@cf/qwen/qwen3.8-27b",
+  "@cf/google/gemma-2b-it-lora": "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/google/gemma-7b-it-lora": "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/meta/llama-3.1-8b-instruct-fp8": "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/meta/llama-3.2-1b-instruct": "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/meta/llama-3.2-3b-instruct": "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/qwen/qwq-32b": "@cf/qwen/qwen3.8-27b",
+  "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b": "@cf/qwen/qwen3.8-27b",
+  "@cf/zai-org/glm-5.2": "@cf/zai-org/glm-4.7-flash",
+  "@cf/zai-org/glm-5.3-flash": "@cf/zai-org/glm-4.7-flash",
+  "@cf/moonshotai/kimi-k2.6": "@cf/qwen/qwen3.8-27b",
+  "@cf/moonshotai/kimi-k2.7-code": "@cf/qwen/qwen3.8-27b",
+  "@cf/nvidia/nemotron-3-120b-a12b": "@cf/qwen/qwen3.8-27b",
+  "@cf/deepseek-ai/deepseek-v4-pro-0813": "@cf/qwen/qwen3.8-27b",
+  "@cf/deepseek-ai/deepseek-v4-flash-0731": "@cf/qwen/qwen3.8-27b",
+};
+
+/** Rewrites a retired model id to its replacement; other ids pass through. */
+export function migrateWorkersAIModel(id: string): string {
+  return RETIRED_WORKERS_AI_MODELS[id] ?? id;
+}
 
 export function findPreset(id: string | undefined): CompatPreset | undefined {
   if (!id) return undefined;

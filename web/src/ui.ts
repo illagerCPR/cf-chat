@@ -1,4 +1,9 @@
-import { COMPAT_PRESETS, WORKERS_AI_MODELS, findPreset } from "../../shared/models";
+import {
+  COMPAT_PRESETS,
+  WORKERS_AI_MODELS,
+  findPreset,
+  migrateWorkersAIModel,
+} from "../../shared/models";
 import type { ProviderKind } from "../../shared/models";
 import { estimatedUsage, estimatePromptTokens } from "../../shared/tokens";
 import type { Usage } from "../../shared/tokens";
@@ -775,7 +780,7 @@ export class App {
     const presetOptions = COMPAT_PRESETS.map(
       (preset) => `<option value="${preset.id}">${preset.label}</option>`,
     ).join("");
-    const workersHint = this.catalog?.workersAI.defaultModel ?? "@cf/qwen/qwen3-30b-a3b-fp8";
+    const workersHint = this.catalog?.workersAI.defaultModel ?? "@cf/qwen/qwen3.8-27b";
     const fallback = this.catalog?.workersAI.fallbackModel;
     const providerOptions = [
       `<option value="workers-ai">Workers AI（内置，无需密钥）</option>`,
@@ -1067,7 +1072,7 @@ export class App {
         this.settings = {
           ...this.settings,
           provider: providerSelect.value as ProviderKind,
-          workersModel: workersInput.value.trim(),
+          workersModel: migrateWorkersAIModel(workersInput.value.trim()),
           presetId: presetSelect.value,
           compatModel: modelInput.value.trim(),
           customBaseUrl: baseUrlInput.value.trim(),

@@ -1,3 +1,4 @@
+import { migrateWorkersAIModel } from "../../shared/models";
 import type { ChatMessage, ProviderKind, ThinkingMode } from "../../shared/models";
 import type { Usage } from "../../shared/tokens";
 import { newId } from "./util";
@@ -96,7 +97,10 @@ function normalizeSettings(raw: unknown): Settings {
       provider === "workers-ai" || provider === "openai-compatible" || provider === "mock"
         ? provider
         : base.provider,
-    workersModel: typeof raw.workersModel === "string" ? raw.workersModel : base.workersModel,
+    workersModel:
+      typeof raw.workersModel === "string"
+        ? migrateWorkersAIModel(raw.workersModel)
+        : base.workersModel,
     presetId,
     compatModel,
     customBaseUrl: typeof raw.customBaseUrl === "string" ? raw.customBaseUrl : base.customBaseUrl,

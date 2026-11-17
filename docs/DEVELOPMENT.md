@@ -87,7 +87,7 @@ web/
 
 思考开关的映射：
 
-- Workers AI：对 qwen3 / gemma-4 / glm-4 / nemotron 系列传 `chat_template_kwargs.enable_thinking`；其他模型忽略。
+- Workers AI：对 qwen3 / gemma-4 / glm-4 / nemotron 系列传 `chat_template_kwargs.enable_thinking`；其他模型忽略。`qwen3.8-27b` 与 `gemma-4-26b-a4b-it` 都认这个开关。
 - OpenAI 兼容（DeepSeek）：`thinking: { "type": "enabled" | "disabled" }`，仅当 Base URL 的主机名以 `deepseek.com` 结尾时附加。
 - `auto` 不传任何参数，跟随模型默认。
 

@@ -69,8 +69,8 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 
 | 项目 | 位置 | 说明 |
 | --- | --- | --- |
-| 默认模型 | `wrangler.jsonc` → `vars.DEFAULT_MODEL` | 默认 `@cf/qwen/qwen3-30b-a3b-fp8` |
-| 降级模型 | `wrangler.jsonc` → `vars.FALLBACK_MODEL` | 默认 `@cf/meta/llama-3.3-70b-instruct-fp8-fast` |
+| 默认模型 | `wrangler.jsonc` → `vars.DEFAULT_MODEL` | 默认 `@cf/qwen/qwen3.8-27b` |
+| 降级模型 | `wrangler.jsonc` → `vars.FALLBACK_MODEL` | 默认 `@cf/google/gemma-4-26b-a4b-it` |
 | 提供方列表 | `shared/models.ts` | 增删预设或改默认 Base URL |
 | 服务端默认密钥 | `wrangler secret put OPENAI_COMPAT_API_KEY` | 可选；让访客不填 Key 也能用某个服务商 |
 | 限流 | `wrangler.jsonc` → `ratelimits` | 默认 12 次 / 60 秒 / IP |
@@ -78,7 +78,8 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 ## 已知限制
 
 - Workers AI 免费额度为 10000 Neurons/天（`00:00 UTC` 重置），额度用尽后对话会失败
-- 默认的 `qwen3-30b-a3b-fp8` 是 MoE 模型，中文表现不错；如果想更省额度可以换回 `@cf/google/gemma-2b-it-lora`（2B，中文较弱）
+- 默认的 `qwen3.8-27b` 中文表现好，支持思考与读图；想更省额度可以换 `@cf/google/gemma-4-26b-a4b-it` 或 `@cf/zai-org/glm-4.7-flash`
+- `@cf/qwen/qwen3-30b-a3b-fp8`、`@cf/google/gemma-2b-it-lora` 等模型已于 2026-11-20 下线，调用会返回 `410 Gone`（错误码 `5028`）；浏览器里存过的旧模型名会自动改写到替代模型
 - `@cf/google/gemma-3-12b-it` 等部分模型需要账户具备权限，免费账户可能返回 `5018: This account is not allowed to access …`
 - 思考内容计入输出 tokens；默认模型开思考时，每轮消耗的 Neurons 约为关闭时的数倍，免费额度用得更快
 - Token 用量里的「累计」是每轮实际发出的输入加输出之和，历史会重复携带，所以通常远大于「本轮输入」；提供商不返回用量时，数字是按字符估算的近似值
