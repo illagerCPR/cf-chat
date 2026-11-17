@@ -1122,6 +1122,90 @@ body.has-bg {
   font-variant-numeric: tabular-nums;
 }
 
+.image-ref-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.image-ref-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.image-ref-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.image-ref-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---------- staged reference images ---------- */
+
+.image-refs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 760px;
+  margin: 0 auto 8px;
+  padding: 0 4px;
+}
+
+.ref-thumb {
+  position: relative;
+  margin: 0;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--panel-soft);
+}
+
+.ref-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ref-remove {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(20, 20, 18, 0.72);
+  color: #fff;
+}
+
+.ref-remove svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2.4;
+}
+
+.ref-note {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 /* ---------- generated image gallery ---------- */
 
 .gallery {

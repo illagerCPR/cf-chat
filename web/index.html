@@ -101,8 +101,17 @@
                 <option value="4">4 张</option>
               </select>
             </label>
+            <button type="button" class="image-ref-btn" id="image-ref-add">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span>参考图</span>
+            </button>
+            <input type="file" id="image-ref-file" accept="image/*" multiple hidden />
             <span class="image-hint" id="image-hint"></span>
           </div>
+
+          <div class="image-refs" id="image-refs" hidden></div>
 
           <form class="composer" id="composer">
             <textarea

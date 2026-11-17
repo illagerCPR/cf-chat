@@ -12,6 +12,8 @@ export interface ImageRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  /** Reference images for image-to-image; only the FLUX.2 family takes these. */
+  inputImages?: { base64: string; mimeType: string }[];
 }
 
 export interface GeneratedImage {

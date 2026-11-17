@@ -69,6 +69,14 @@ export interface ImageModelSpec {
   guidance?: { min: number; max: number; default: number };
   /** Whether a negative prompt is accepted. */
   negativePrompt?: boolean;
+  /**
+   * How many reference images the model accepts, if any.
+   *
+   * Only the FLUX.2 family does, and it caps each input at 512x512 — the
+   * browser downscales before sending, because the model rejects anything
+   * larger rather than scaling it down itself.
+   */
+  maxInputImages?: number;
   /** Rough neurons burned per image at 1024x1024, for the cost hint. */
   neuronsPerImage: number;
 }
@@ -92,6 +100,7 @@ export const WORKERS_AI_IMAGE_MODELS: ImageModelSpec[] = [
     minEdge: 256,
     maxEdge: 1920,
     guidance: { min: 1, max: 10, default: 3.5 },
+    maxInputImages: 4,
     neuronsPerImage: 1363.64,
   },
   {
@@ -105,6 +114,7 @@ export const WORKERS_AI_IMAGE_MODELS: ImageModelSpec[] = [
     minEdge: 256,
     maxEdge: 1920,
     guidance: { min: 1, max: 10, default: 3.5 },
+    maxInputImages: 4,
     neuronsPerImage: 104.2,
   },
   {
@@ -119,6 +129,7 @@ export const WORKERS_AI_IMAGE_MODELS: ImageModelSpec[] = [
     maxEdge: 1920,
     steps: { min: 1, max: 50, default: 25 },
     guidance: { min: 1, max: 10, default: 3.5 },
+    maxInputImages: 4,
     neuronsPerImage: 3750,
   },
   {

@@ -38,6 +38,8 @@ export interface MessageRecord {
   imagePrompt?: string;
   /** Ratio id used for `images`, so a retry keeps the same framing. */
   imageRatio?: string;
+  /** Reference image ids used for `images`, so a retry reproduces the request. */
+  imageRefs?: string[];
 }
 
 export interface Conversation {

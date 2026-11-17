@@ -29,7 +29,12 @@ interface ImagePayload {
   steps?: number;
   guidance?: number;
   seed?: number;
+  /** Reference images for image-to-image, base64 without the data: prefix. */
+  inputImages?: { base64: string; mimeType: string }[];
 }
+
+/** Each reference image is capped at 512x512 by the model, so the bytes stay small. */
+const MAX_INPUT_IMAGE_BYTES = 1_500_000;
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; message: string };
 
@@ -40,6 +45,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
+}
+
+function parseInputImages(raw: unknown): Parsed<{ base64: string; mimeType: string }[]> {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) return { ok: false, message: "参考图格式不正确。" };
+  if (raw.length > 4) return { ok: false, message: "参考图最多 4 张。" };
+
+  const images: { base64: string; mimeType: string }[] = [];
+  for (const item of raw) {
+    if (!isRecord(item) || typeof item.base64 !== "string" || !item.base64) {
+      return { ok: false, message: "参考图数据不完整。" };
+    }
+    // Base64 is 4/3 of the byte size; this keeps one request well under the
+    // Worker's memory ceiling without decoding anything.
+    if (item.base64.length > MAX_INPUT_IMAGE_BYTES) {
+      return { ok: false, message: "参考图太大了，请换一张更小的。" };
+    }
+    const mimeType = typeof item.mimeType === "string" ? item.mimeType : "image/png";
+    if (!mimeType.startsWith("image/")) {
+      return { ok: false, message: "参考图必须是图片。" };
+    }
+    images.push({ base64: item.base64, mimeType });
+  }
+  return { ok: true, value: images };
 }
 
 export function parseImageRequest(raw: unknown): Parsed<ImagePayload> {
@@ -59,6 +88,9 @@ export function parseImageRequest(raw: unknown): Parsed<ImagePayload> {
   const negativePrompt =
     typeof raw.negativePrompt === "string" ? raw.negativePrompt.trim().slice(0, 500) : "";
 
+  const inputImages = parseInputImages(raw.inputImages);
+  if (!inputImages.ok) return { ok: false, message: inputImages.message };
+
   return {
     ok: true,
     value: {
@@ -73,6 +105,7 @@ export function parseImageRequest(raw: unknown): Parsed<ImagePayload> {
       steps: typeof raw.steps === "number" ? raw.steps : undefined,
       guidance: typeof raw.guidance === "number" ? raw.guidance : undefined,
       seed: typeof raw.seed === "number" && Number.isFinite(raw.seed) ? Math.round(raw.seed) : undefined,
+      inputImages: inputImages.value,
     },
   };
 }
@@ -232,6 +265,7 @@ export async function handleImage(request: Request, env: Env): Promise<Response>
           height: ratio.height,
           steps: 4,
           guidance: 0,
+          inputImages: payload.inputImages,
         });
         images.push({ ...image, width: ratio.width, height: ratio.height });
       }
@@ -297,6 +331,25 @@ export async function handleImage(request: Request, env: Env): Promise<Response>
       spec.guidance?.default ?? 0,
     );
 
+    const inputImages = payload.inputImages ?? [];
+    if (inputImages.length > 0) {
+      const limit = spec.maxInputImages ?? 0;
+      if (limit === 0) {
+        throw new ProviderError(
+          `${spec.label} 不支持参考图，请换用 FLUX.2 系列模型。`,
+          400,
+          "input_image_unsupported",
+        );
+      }
+      if (inputImages.length > limit) {
+        throw new ProviderError(
+          `${spec.label} 最多接受 ${limit} 张参考图。`,
+          400,
+          "too_many_input_images",
+        );
+      }
+    }
+
     const images = [];
     for (let index = 0; index < payload.count; index += 1) {
       const image = await runWorkersAIImage(
@@ -310,6 +363,7 @@ export async function handleImage(request: Request, env: Env): Promise<Response>
           steps,
           guidance,
           seed: payload.seed,
+          inputImages,
         },
         request.signal,
       );

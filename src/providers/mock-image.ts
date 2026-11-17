@@ -58,6 +58,21 @@ export async function runMockImage(request: ImageRequest): Promise<GeneratedImag
     )
     .join("");
 
+  // Reference images are drawn as small tiles so the offline path exercises the
+  // same code the real models use, instead of silently ignoring them.
+  const refs = request.inputImages ?? [];
+  const tile = Math.round(Math.min(width, height) / 6);
+  const refTiles = refs
+    .map((image, index) => {
+      const x = 24 + index * (tile + 10);
+      return (
+        `<image x="${x}" y="24" width="${tile}" height="${tile}" preserveAspectRatio="xMidYMid slice" ` +
+        `href="data:${escapeXml(image.mimeType)};base64,${image.base64}"/>` +
+        `<rect x="${x}" y="24" width="${tile}" height="${tile}" fill="none" stroke="#f6821f" stroke-width="2" rx="8"/>`
+      );
+    })
+    .join("");
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -67,6 +82,7 @@ export async function runMockImage(request: ImageRequest): Promise<GeneratedImag
   </defs>
   <rect width="${width}" height="${height}" fill="url(#bg)"/>
   <rect x="12" y="12" width="${width - 24}" height="${height - 24}" fill="none" stroke="#f6821f" stroke-width="3" stroke-dasharray="14 10" rx="18"/>
+  ${refTiles}
   ${text}
   <text x="${width / 2}" y="${height - 28}" text-anchor="middle" font-family="system-ui, sans-serif" font-size="${Math.round(fontSize * 0.62)}" fill="#8a4300">演示占位图 · ${width}×${height} · 未调用真实模型</text>
 </svg>`;

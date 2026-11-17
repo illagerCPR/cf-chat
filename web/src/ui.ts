@@ -31,6 +31,8 @@ import {
   imageUrl,
   pruneImages,
   saveImage,
+  saveImageBlob,
+  storedImageAsInput,
 } from "./image-store";
 import {
   applyBackground,
@@ -104,6 +106,9 @@ interface Elements {
   imageBar: HTMLElement;
   imageRatio: HTMLSelectElement;
   imageCount: HTMLSelectElement;
+  imageRefAdd: HTMLButtonElement;
+  imageRefFile: HTMLInputElement;
+  imageRefs: HTMLElement;
   imageHint: HTMLElement;
   composerHint: HTMLElement;
   lightbox: HTMLDialogElement;
@@ -121,6 +126,11 @@ export class App {
   private backgroundImage: string | null = null;
   /** Which composer mode is active; image mode sends to /api/image. */
   private mode: "chat" | "image" = "chat";
+  /**
+   * Reference images staged for the next image request, as ids into the image
+   * store. Ids rather than bytes so a retry can reuse them after a reload.
+   */
+  private imageRefs: { id: string; preview: string }[] = [];
 
   private readonly els: Elements = {
     sidebar: must("#sidebar"),
@@ -147,6 +157,9 @@ export class App {
     imageBar: must("#image-bar"),
     imageRatio: must("#image-ratio"),
     imageCount: must("#image-count"),
+    imageRefAdd: must("#image-ref-add"),
+    imageRefFile: must("#image-ref-file"),
+    imageRefs: must("#image-refs"),
     imageHint: must("#image-hint"),
     composerHint: must("#composer-hint"),
     lightbox: must("#lightbox"),
@@ -352,6 +365,16 @@ export class App {
       });
 
       actions.append(download, copy);
+
+      // Only the FLUX.2 family takes references, so the button is hidden rather
+      // than shown-and-rejected on the other models.
+      if (this.maxInputImages() > 0) {
+        const reference = textButton("作参考图");
+        reference.title = "把这张图作为下一张的参考图";
+        reference.addEventListener("click", () => void this.useAsReference(image.id));
+        actions.append(reference);
+      }
+
       figure.append(frame, actions);
       gallery.append(figure);
     }
@@ -608,6 +631,15 @@ export class App {
       this.els.imageRatio.value = this.settings.imageRatio;
       this.els.imageCount.value = String(this.settings.imageCount);
       this.els.imageHint.textContent = this.imageCostHint();
+
+      // Reference images only exist on the FLUX.2 family; disable the control
+      // instead of letting the user pick files that would be rejected.
+      const supportsRefs = this.maxInputImages() > 0;
+      this.els.imageRefAdd.disabled = !supportsRefs;
+      this.els.imageRefAdd.title = supportsRefs
+        ? "上传参考图，让模型照着改"
+        : "当前模型不支持参考图，请换用 FLUX.2 系列";
+      if (!supportsRefs) this.clearReferences();
     } else {
       this.els.imageHint.textContent = "";
     }
@@ -631,6 +663,112 @@ export class App {
     const neurons = estimateNeurons(spec, width, height, steps) * this.settings.imageCount;
     const size = spec.sizeControl ? `${width}×${height}` : "固定尺寸";
     return `${size} · 约 ${Math.round(neurons).toLocaleString("zh-CN")} neurons（免费额度 10,000/天）`;
+  }
+
+  // -------------------------------------------------------- reference images
+
+  /** How many reference images the active model accepts; 0 means none. */
+  private maxInputImages(): number {
+    // The demo provider draws the references into its placeholder card, so the
+    // whole upload path stays testable without a Cloudflare account.
+    if (this.settings.imageProvider === "mock") return 4;
+    if (this.settings.imageProvider !== "workers-ai") return 0;
+    return this.imageModel().maxInputImages ?? 0;
+  }
+
+  private async addReferenceFiles(files: FileList | File[]): Promise<void> {
+    const limit = this.maxInputImages();
+    if (limit === 0) {
+      this.showStatus("当前模型不支持参考图，请换用 FLUX.2 系列。", true);
+      return;
+    }
+
+    for (const file of Array.from(files)) {
+      if (this.imageRefs.length >= limit) {
+        this.showStatus(`最多 ${limit} 张参考图。`, true);
+        break;
+      }
+      if (!file.type.startsWith("image/")) continue;
+      try {
+        // Stored like any other picture so a retry can find it again by id.
+        const stored = await saveImageBlob(file);
+        const preview = await imageUrl(stored.id);
+        if (!preview) continue;
+        this.imageRefs.push({ id: stored.id, preview });
+      } catch {
+        this.showStatus("这张图读不出来，换一张试试。", true);
+      }
+    }
+    this.renderReferenceStrip();
+  }
+
+  /** Stages an already-generated picture as the next request's reference. */
+  private async useAsReference(id: string): Promise<void> {
+    const limit = this.maxInputImages();
+    if (limit === 0) {
+      this.showStatus("当前模型不支持参考图，请换用 FLUX.2 系列。", true);
+      return;
+    }
+    if (this.imageRefs.length >= limit) {
+      this.showStatus(`最多 ${limit} 张参考图。`, true);
+      return;
+    }
+    if (this.imageRefs.some((reference) => reference.id === id)) {
+      this.showStatus("这张已经是参考图了。");
+      return;
+    }
+    const preview = await imageUrl(id);
+    if (!preview) {
+      this.showStatus("这张图已经找不到了。", true);
+      return;
+    }
+    this.imageRefs.push({ id, preview });
+    this.renderReferenceStrip();
+    this.setMode("image");
+    this.showStatus("已加入参考图，接着描述你想怎么改。");
+  }
+
+  private renderReferenceStrip(): void {
+    const strip = this.els.imageRefs;
+    strip.replaceChildren();
+    strip.hidden = this.imageRefs.length === 0;
+
+    this.imageRefs.forEach((reference, index) => {
+      const item = document.createElement("figure");
+      item.className = "ref-thumb";
+
+      const img = document.createElement("img");
+      img.src = reference.preview;
+      img.alt = `参考图 ${index + 1}`;
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ref-remove";
+      remove.setAttribute("aria-label", `移除参考图 ${index + 1}`);
+      remove.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>';
+      remove.addEventListener("click", () => {
+        this.imageRefs.splice(index, 1);
+        this.renderReferenceStrip();
+      });
+
+      item.append(img, remove);
+      strip.append(item);
+    });
+
+    // The model names references by index, so the order is worth showing.
+    if (this.imageRefs.length > 0) {
+      const note = document.createElement("span");
+      note.className = "ref-note";
+      note.textContent = `参考图 ${this.imageRefs.length} 张 · 提示词里可用「图 1」指代`;
+      strip.append(note);
+    }
+  }
+
+  private clearReferences(): void {
+    if (this.imageRefs.length === 0) return;
+    this.imageRefs = [];
+    this.renderReferenceStrip();
   }
 
   private setMode(mode: "chat" | "image"): void {
@@ -678,6 +816,24 @@ export class App {
       steps: this.settings.imageSteps || undefined,
       guidance: this.settings.imageGuidance || undefined,
     };
+  }
+
+  /**
+   * Resolves reference ids into bytes for the request body.
+   *
+   * Takes the ids explicitly rather than reading the staging strip: the strip is
+   * cleared before the request goes out, so reading it here would silently drop
+   * every reference.
+   */
+  private async resolveReferences(
+    ids: string[],
+  ): Promise<{ base64: string; mimeType: string }[]> {
+    const resolved: { base64: string; mimeType: string }[] = [];
+    for (const id of ids) {
+      const converted = await storedImageAsInput(id);
+      if (converted) resolved.push(converted);
+    }
+    return resolved;
   }
 
   private updateUsageSummary(): void {
@@ -994,13 +1150,23 @@ export class App {
     this.updateChrome();
     this.scrollToBottom(true);
 
-    await this.requestImages(conversation, prompt);
+    // Snapshot the staged references, then clear the strip: they belong to this
+    // request now, and the next one starts from a clean slate.
+    const referenceIds = this.imageRefs.map((reference) => reference.id);
+    this.clearReferences();
+
+    await this.requestImages(conversation, prompt, referenceIds);
   }
 
-  private async requestImages(conversation: Conversation, prompt: string): Promise<void> {
+  private async requestImages(
+    conversation: Conversation,
+    prompt: string,
+    referenceIds: string[] = [],
+  ): Promise<void> {
     const assistant = createMessage("assistant", "");
     assistant.imagePrompt = prompt;
     assistant.imageRatio = this.settings.imageRatio;
+    if (referenceIds.length > 0) assistant.imageRefs = referenceIds;
     conversation.messages.push(assistant);
 
     this.clearRetryButtons();
@@ -1018,8 +1184,12 @@ export class App {
     let error: string | undefined;
 
     try {
+      const request = this.buildImageRequest(prompt);
+      const references = await this.resolveReferences(referenceIds);
+      if (references.length > 0) request.inputImages = references;
+
       const response: ImageResponse = await generateImages(
-        this.buildImageRequest(prompt),
+        request,
         this.imageKey(),
         controller.signal,
       );
@@ -1156,6 +1326,7 @@ export class App {
     // chat pipeline; the ratio is restored so the framing stays the same.
     const imagePrompt = last.imagePrompt;
     const imageRatio = last.imageRatio;
+    const imageRefs = last.imageRefs ?? [];
     const staleIds = (last.images ?? []).map((image) => image.id);
 
     conversation.messages.pop();
@@ -1163,7 +1334,16 @@ export class App {
 
     if (imagePrompt) {
       if (imageRatio) this.settings = { ...this.settings, imageRatio };
-      await this.requestImages(conversation, imagePrompt);
+      // The references are still in the store, so a retry reproduces the same
+      // request instead of silently dropping back to text-to-image.
+      this.imageRefs = [];
+      for (const id of imageRefs) {
+        const preview = await imageUrl(id);
+        if (preview) this.imageRefs.push({ id, preview });
+      }
+      this.renderReferenceStrip();
+      await this.requestImages(conversation, imagePrompt, imageRefs);
+      this.clearReferences();
       void deleteImages(staleIds);
       return;
     }
@@ -1254,6 +1434,14 @@ export class App {
       };
       saveSettings(this.settings);
       this.els.imageHint.textContent = this.imageCostHint();
+    });
+
+    this.els.imageRefAdd.addEventListener("click", () => this.els.imageRefFile.click());
+    this.els.imageRefFile.addEventListener("change", () => {
+      const files = this.els.imageRefFile.files;
+      if (files && files.length > 0) void this.addReferenceFiles(files);
+      // Reset so picking the same file twice still fires a change event.
+      this.els.imageRefFile.value = "";
     });
 
     this.els.lightboxClose.addEventListener("click", () => this.els.lightbox.close());

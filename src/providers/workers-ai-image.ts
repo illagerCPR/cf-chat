@@ -9,6 +9,14 @@ export interface ImageRequest {
   steps: number;
   guidance: number;
   seed?: number;
+  /** Reference images for image-to-image; only the FLUX.2 family takes these. */
+  inputImages?: InputImage[];
+}
+
+/** One reference image, already downscaled by the browser to fit the limit. */
+export interface InputImage {
+  base64: string;
+  mimeType: string;
 }
 
 export interface GeneratedImage {
@@ -238,6 +246,14 @@ function buildForm(request: ImageRequest, spec: ImageModelSpec): FormData {
   if (spec.steps) form.append(spec.stepsField ?? "steps", String(request.steps));
   if (spec.guidance) form.append("guidance", String(request.guidance));
   if (request.seed !== undefined) form.append("seed", String(request.seed));
+
+  // Reference images must be named input_image_0..input_image_3 exactly; the
+  // model silently ignores any other field name.
+  for (const [index, image] of (request.inputImages ?? []).entries()) {
+    const bytes = base64ToBytes(image.base64);
+    const blob = new Blob([bytes], { type: image.mimeType || DEFAULT_MIME });
+    form.append(`input_image_${index}`, blob, `input-${index}.png`);
+  }
   return form;
 }
 

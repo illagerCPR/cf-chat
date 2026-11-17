@@ -110,7 +110,19 @@ export async function saveImage(
   mimeType: string,
 ): Promise<{ id: string; width: number; height: number; bytes: number }> {
   const bytes = base64ToBytes(base64);
-  const original = new Blob([bytes], { type: mimeType || "image/png" });
+  return saveImageBlob(new Blob([bytes], { type: mimeType || "image/png" }));
+}
+
+/**
+ * Stores an arbitrary picture blob.
+ *
+ * Uploaded reference images go through here too: keeping them in the same store
+ * means a conversation can point at them by id, so "重新画" can reuse the same
+ * references instead of asking the user to pick them again.
+ */
+export async function saveImageBlob(
+  original: Blob,
+): Promise<{ id: string; width: number; height: number; bytes: number }> {
   const { blob, width, height } = await compress(original);
 
   const record: StoredImage = {
@@ -201,4 +213,75 @@ export async function downloadImage(id: string, filename: string): Promise<void>
   anchor.download = filename;
   anchor.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/**
+ * The FLUX.2 models reject any reference image whose long edge is 512 or more,
+ * so this is a hard cap rather than a quality knob.
+ */
+export const INPUT_IMAGE_MAX_EDGE = 512;
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error("读取图片失败。"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Shrinks a picture to fit the reference-image limit and returns base64.
+ *
+ * The model does not scale inputs down itself — it errors out — so the browser
+ * has to do it. 512 is the exclusive bound, hence the -1.
+ */
+export async function toInputImage(
+  blob: Blob,
+): Promise<{ base64: string; mimeType: string }> {
+  const bitmap = await decode(blob);
+  const width = "width" in bitmap ? bitmap.width : 0;
+  const height = "height" in bitmap ? bitmap.height : 0;
+  if (!width || !height) {
+    return { base64: await blobToBase64(blob), mimeType: blob.type || "image/png" };
+  }
+
+  const scale = Math.min(1, (INPUT_IMAGE_MAX_EDGE - 1) / Math.max(width, height));
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return { base64: await blobToBase64(blob), mimeType: blob.type || "image/png" };
+  }
+  context.drawImage(bitmap as CanvasImageSource, 0, 0, targetWidth, targetHeight);
+  if ("close" in bitmap && typeof bitmap.close === "function") bitmap.close();
+
+  const encoded = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((result) => resolve(result), "image/png");
+  });
+  if (!encoded || encoded.size === 0) {
+    return { base64: await blobToBase64(blob), mimeType: blob.type || "image/png" };
+  }
+  return { base64: await blobToBase64(encoded), mimeType: "image/png" };
+}
+
+/** Reads a stored image back as a reference image for image-to-image. */
+export async function storedImageAsInput(
+  id: string,
+): Promise<{ base64: string; mimeType: string } | null> {
+  const record = await imageRecord(id);
+  if (!record) return null;
+  try {
+    return await toInputImage(record.blob);
+  } catch {
+    return null;
+  }
 }

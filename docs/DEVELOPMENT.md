@@ -152,11 +152,16 @@ data: [DONE]
   "count": 1,                       // 1–4
   "steps": 0,                       // 0 = 用模型默认值
   "guidance": 0,                    // 0 = 用模型默认值
-  "seed": 12345                     // 可选
+  "seed": 12345,                    // 可选
+  "inputImages": [                  // 可选，图生图的参考图
+    { "base64": "iVBORw0KGgo…", "mimeType": "image/png" }
+  ]
 }
 ```
 
 校验规则：`prompt` 非空且 ≤2000 字符；`negativePrompt` ≤500 字符；`count` 1–4；`provider` 必须命中白名单。宽高由 `ratio` 经 `clampSize()` 收敛到模型允许的范围（`flux-2-*` 256–1920、`phoenix` 256–2048、`lucid-origin` 256–2500），客户端不能直接指定像素。
+
+`inputImages` 最多 4 张，每张 base64 长度 ≤1.5 MB，`mimeType` 必须以 `image/` 开头。只有 `flux-2-*` 支持（`shared/images.ts` 的 `maxInputImages`），其他模型传了会返回 400 `input_image_unsupported`。模型要求每张参考图**小于 512×512**，且不会自己缩放——所以浏览器在 `toInputImage()` 里先压到 511 再发，超限会直接报错而不是自动缩小。
 
 响应：
 
@@ -175,14 +180,14 @@ data: [DONE]
 
 ### 各模型的输入形状
 
-| 模型 | 输入 | 输出 | 尺寸可控 | 步数 | 引导 | 负面提示词 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `flux-2-klein-9b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 |
-| `flux-2-klein-4b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 |
-| `flux-2-dev` | multipart | `{image}` base64 | 256–1920 | 1–50 | 有 | 无 |
-| `flux-1-schnell` | json | `{image}` base64 | **不可控** | 1–8 | 无 | 无 |
-| `phoenix-1.0` | json | **二进制 JPEG** | 256–2048 | 1–50 | 有 | 有 |
-| `lucid-origin` | json | `{image}` base64 | 256–2500 | 1–40 | 有 | 无 |
+| 模型 | 输入 | 输出 | 尺寸可控 | 步数 | 引导 | 负面提示词 | 参考图 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `flux-2-klein-9b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 | 最多 4 张 |
+| `flux-2-klein-4b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 | 最多 4 张 |
+| `flux-2-dev` | multipart | `{image}` base64 | 256–1920 | 1–50 | 有 | 无 | 最多 4 张 |
+| `flux-1-schnell` | json | `{image}` base64 | **不可控** | 1–8 | 无 | 无 | 不支持 |
+| `phoenix-1.0` | json | **二进制 JPEG** | 256–2048 | 1–50 | 有 | 有 | 不支持 |
+| `lucid-origin` | json | `{image}` base64 | 256–2500 | 1–40 | 有 | 无 | 不支持 |
 
 multipart 的写法（binding 侧）：
 
@@ -191,6 +196,8 @@ const form = new FormData();
 form.append("prompt", prompt);
 form.append("width", String(width));
 form.append("height", String(height));
+// 参考图必须叫 input_image_0..3，别的名字模型会静默忽略。
+form.append("input_image_0", blob, "input-0.png");
 // FormData 不暴露序列化后的 body 与 boundary，必须过一遍 Response。
 const serialized = new Response(form);
 await env.AI.run(model, {
