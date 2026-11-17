@@ -246,17 +246,57 @@ svg {
   color: var(--text);
 }
 
+.model-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  align-items: stretch;
+}
+
 .model-chip {
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   padding: 3px 8px;
+  border: 1px solid transparent;
   border-radius: 999px;
   background: var(--panel-soft);
   color: var(--muted);
   font-size: 11.5px;
   font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  text-align: left;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.model-chip:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* The chip for the mode the next message will use. */
+.model-chip.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.model-chip .chip-kind {
+  flex: none;
+  color: var(--accent-ink);
+  opacity: 0.75;
+}
+
+.model-chip.active .chip-kind {
+  opacity: 1;
+}
+
+.model-chip .chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- main ---------- */

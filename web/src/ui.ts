@@ -87,7 +87,8 @@ interface Elements {
   newChat: HTMLButtonElement;
   conversationList: HTMLElement;
   openSettings: HTMLButtonElement;
-  modelChip: HTMLElement;
+  modelChipChat: HTMLButtonElement;
+  modelChipImage: HTMLButtonElement;
   chatTitle: HTMLElement;
   status: HTMLElement;
   messages: HTMLElement;
@@ -129,7 +130,8 @@ export class App {
     newChat: must("#new-chat"),
     conversationList: must("#conversation-list"),
     openSettings: must("#open-settings"),
-    modelChip: must("#model-chip"),
+    modelChipChat: must("#model-chip-chat"),
+    modelChipImage: must("#model-chip-image"),
     chatTitle: must("#chat-title"),
     status: must("#status"),
     messages: must("#messages"),
@@ -533,24 +535,30 @@ export class App {
     this.els.chatTitle.textContent = conversation?.title ?? "新对话";
     this.updateUsageSummary();
 
-    if (this.mode === "image") {
-      this.els.modelChip.textContent = this.imageModelLabel();
-      return;
-    }
+    // Both models stay on screen. Showing only the active one made switching to
+    // 画图 look like the text model had been replaced rather than set aside.
+    this.setChip(this.els.modelChipChat, this.chatModelLabel(), this.mode === "chat");
+    this.setChip(this.els.modelChipImage, this.imageModelLabel(), this.mode === "image");
+  }
 
-    if (this.settings.provider === "mock") {
-      this.els.modelChip.textContent = "演示模式";
-      return;
-    }
+  private setChip(chip: HTMLButtonElement, label: string, active: boolean): void {
+    const name = chip.querySelector<HTMLElement>(".chip-name");
+    if (name) name.textContent = label;
+    chip.classList.toggle("active", active);
+    const kind = chip.querySelector<HTMLElement>(".chip-kind")?.textContent ?? "";
+    chip.title = `${kind}模型：${label} · 点击切换到${kind === "图像" ? "画图" : "对话"}`;
+  }
+
+  private chatModelLabel(): string {
+    if (this.settings.provider === "mock") return "演示模式";
     if (this.settings.provider === "workers-ai") {
       const model =
         this.settings.workersModel || this.catalog?.workersAI.defaultModel || "Workers AI";
-      this.els.modelChip.textContent = shortModelName(model);
-      return;
+      return shortModelName(model);
     }
     const preset = findPreset(this.settings.presetId);
     const model = this.compatModel();
-    this.els.modelChip.textContent = preset ? `${preset.label} · ${shortModelName(model)}` : shortModelName(model);
+    return preset ? `${preset.label} · ${shortModelName(model)}` : shortModelName(model);
   }
 
   // ------------------------------------------------------------------- images
@@ -562,7 +570,7 @@ export class App {
   }
 
   private imageModelLabel(): string {
-    if (this.settings.imageProvider === "mock") return "演示模式 · 画图";
+    if (this.settings.imageProvider === "mock") return "演示模式";
     if (this.settings.imageProvider === "openai-compatible") {
       const preset = findImagePreset(this.settings.imagePresetId);
       const model = this.imageCompatModel();
@@ -596,14 +604,16 @@ export class App {
       ? "Enter 生成 · Shift + Enter 换行 · 图片保存在本浏览器"
       : "Enter 发送 · Shift + Enter 换行 · 对话保存在本浏览器";
 
-    if (!image) {
+    if (image) {
+      this.els.imageRatio.value = this.settings.imageRatio;
+      this.els.imageCount.value = String(this.settings.imageCount);
+      this.els.imageHint.textContent = this.imageCostHint();
+    } else {
       this.els.imageHint.textContent = "";
-      return;
     }
 
-    this.els.imageRatio.value = this.settings.imageRatio;
-    this.els.imageCount.value = String(this.settings.imageCount);
-    this.els.imageHint.textContent = this.imageCostHint();
+    // Runs on both branches: the chips highlight whichever mode is active, so
+    // returning early here would leave the wrong one lit after switching back.
     this.updateChrome();
   }
 
@@ -1217,6 +1227,11 @@ export class App {
 
     this.els.modeChat.addEventListener("click", () => this.setMode("chat"));
     this.els.modeImage.addEventListener("click", () => this.setMode("image"));
+
+    // The chips double as mode switches, so the model you are looking at is the
+    // one the next message will use.
+    this.els.modelChipChat.addEventListener("click", () => this.setMode("chat"));
+    this.els.modelChipImage.addEventListener("click", () => this.setMode("image"));
 
     this.els.imageRatio.replaceChildren(
       ...IMAGE_RATIOS.map((ratio) => {
