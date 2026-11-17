@@ -159,8 +159,40 @@ async function readBinary(value: unknown): Promise<GeneratedImage | null> {
  * `phoenix-1.0` answers raw JPEG bytes, and the binding may hand back a
  * `ReadableStream` for binary outputs. All of it converges to base64 + mime.
  */
+async function drainStream(stream: ReadableStream<Uint8Array>): Promise<GeneratedImage | null> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.length;
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+  if (!total) return null;
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return fromBytes(merged);
+}
+
 async function extractImage(result: unknown): Promise<GeneratedImage | null> {
   if (result === null || result === undefined) return null;
+
+  // `leonardo/phoenix-1.0` answers a bare ReadableStream of JPEG bytes, not an
+  // object wrapping one, so this has to be checked before anything else.
+  if (typeof result === "object" && typeof (result as ReadableStream).getReader === "function") {
+    return drainStream(result as ReadableStream<Uint8Array>);
+  }
 
   const direct = await readBinary(result);
   if (direct) return direct;
@@ -171,29 +203,7 @@ async function extractImage(result: unknown): Promise<GeneratedImage | null> {
     // A streamed binary body: drain it, then sniff.
     const stream = record.body ?? record.stream;
     if (stream && typeof (stream as ReadableStream).getReader === "function") {
-      const reader = (stream as ReadableStream<Uint8Array>).getReader();
-      const chunks: Uint8Array[] = [];
-      let total = 0;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value) {
-            chunks.push(value);
-            total += value.length;
-          }
-        }
-      } finally {
-        reader.cancel().catch(() => undefined);
-      }
-      if (!total) return null;
-      const merged = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
-      }
-      return fromBytes(merged);
+      return drainStream(stream as ReadableStream<Uint8Array>);
     }
 
     const image = record.image;
@@ -225,7 +235,7 @@ function buildForm(request: ImageRequest, spec: ImageModelSpec): FormData {
     form.append("width", String(request.width));
     form.append("height", String(request.height));
   }
-  if (spec.steps) form.append("steps", String(request.steps));
+  if (spec.steps) form.append(spec.stepsField ?? "steps", String(request.steps));
   if (spec.guidance) form.append("guidance", String(request.guidance));
   if (request.seed !== undefined) form.append("seed", String(request.seed));
   return form;
@@ -237,7 +247,7 @@ function buildJson(request: ImageRequest, spec: ImageModelSpec): Record<string, 
     body.width = request.width;
     body.height = request.height;
   }
-  if (spec.steps) body.steps = request.steps;
+  if (spec.steps) body[spec.stepsField ?? "steps"] = request.steps;
   if (spec.guidance) body.guidance = request.guidance;
   if (spec.negativePrompt && request.negativePrompt) {
     body.negative_prompt = request.negativePrompt;

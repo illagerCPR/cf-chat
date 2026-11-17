@@ -63,6 +63,8 @@ export interface ImageModelSpec {
   maxEdge: number;
   /** Adjustable diffusion steps, when the model exposes them. */
   steps?: { min: number; max: number; default: number };
+  /** Field name for the step count; phoenix-1.0 uses `num_steps`. */
+  stepsField?: "steps" | "num_steps";
   /** Guidance scale, when the model exposes it. */
   guidance?: { min: number; max: number; default: number };
   /** Whether a negative prompt is accepted. */
@@ -143,6 +145,7 @@ export const WORKERS_AI_IMAGE_MODELS: ImageModelSpec[] = [
     minEdge: 256,
     maxEdge: 2048,
     steps: { min: 1, max: 50, default: 25 },
+    stepsField: "num_steps",
     guidance: { min: 2, max: 10, default: 2 },
     negativePrompt: true,
     neuronsPerImage: 2370,
@@ -158,6 +161,7 @@ export const WORKERS_AI_IMAGE_MODELS: ImageModelSpec[] = [
     minEdge: 256,
     maxEdge: 2500,
     steps: { min: 1, max: 40, default: 25 },
+    stepsField: "num_steps",
     guidance: { min: 0, max: 10, default: 4.5 },
     neuronsPerImage: 2544,
   },
