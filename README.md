@@ -1,9 +1,11 @@
 # cf-chat
 
-一个跑在 Cloudflare Workers 上的极简 AI 对话页面。默认使用 Workers AI（不需要任何密钥），也可以切换到任意 OpenAI 兼容的提供商，用自己的 API Key 对话。
+一个跑在 Cloudflare Workers 上的极简 AI 对话与画图页面。默认使用 Workers AI（不需要任何密钥），也可以切换到任意 OpenAI 兼容的提供商，用自己的 API Key 对话或画图。
 
 ## 特性
 
+- **对话 + 画图**：输入框上方切换「对话 / 画图」，同一个会话里文字与图片交替出现
+- **文生图**：内置 6 个 Workers AI 图像模型（FLUX.2 klein 9B / 4B、FLUX.2 dev、FLUX.1 schnell、Leonardo Phoenix / Lucid Origin），也可接 OpenAI 兼容的图像接口
 - **流式输出**：逐字到达，可随时中断，Markdown 与代码块正常渲染
 - **思考过程**：支持思考的模型会把推理过程单独显示在可折叠面板里，可开关、可隐藏
 - **Token 用量**：每条回复给出本轮输入/输出 token，输入框上方汇总整段对话的累计消耗与本轮输入大小
@@ -11,7 +13,7 @@
 - **默认零配置**：部署后直接用 Workers AI 对话，访客不需要密钥
 - **自带密钥（BYOK）**：OpenAI、DeepSeek（`deepseek-flash` / `deepseek-v4-pro`）、Moonshot、智谱 GLM、SiliconFlow、OpenRouter 以及任意 OpenAI 兼容服务
 - **自动降级**：默认模型不可用时自动换到备用模型，并在回复下方标注
-- **多会话**：历史对话保存在本浏览器（IndexedDB），支持切换、删除、重新生成
+- **多会话**：历史对话与图片保存在本浏览器（IndexedDB），支持切换、删除、重新生成、重新画
 - **单 Worker 部署**：静态页面免费，接口与页面同域，没有 CORS 问题
 - **自动部署**：推送到 `main` 即由 GitHub Actions 部署
 
@@ -57,7 +59,19 @@ https://cf-chat.<你的 workers.dev 子域>.workers.dev
 - **Token 用量**：默认开启。每条回复下方显示本轮输入、输出与合计 token；输入框上方汇总这段对话的累计消耗和本轮输入大小。提供商返回用量时是精确值，拿不到时按字符估算（数字前带 `≈`）。设置里可以关掉。
 - **背景图片**：选择本地图片即可，浏览器会先压缩再存入 IndexedDB，换设备不会同步。
 
-API Key 只保存在当前浏览器的 localStorage，不会写入服务端存储。对话内容同理，只存在本机。
+### 画图
+
+输入框上方的「画图」切换后，输入框里写的就是画面描述：
+
+- **比例**：方形 1:1、横版 16:9 / 4:3、竖版 9:16 / 3:4。实际像素随模型能力自动收敛（FLUX.2 系列上限 1920，Leonardo 系列上限 2048/2500）。
+- **张数**：1–4 张。每张单独计费，参数栏右侧会实时估算这次要花多少 neurons。
+- **模型**：设置 → 画图里可选。默认 `flux-2-klein-9b`，质量最好但最贵；想省额度换 `flux-2-klein-4b` 或 `flux-1-schnell`。
+- **自带密钥**：图像提供商选「OpenAI 兼容图像接口」，内置基元律动（tokenrhythm）预设，含 `qwen-image-2.0` 与 `wan2.7-image`；也可以填自定义 Base URL（需兼容 `/images/generations`）。
+- **图片操作**：点图放大查看，下方可下载或复制到剪贴板；最后一条回复可以「重新画」。
+
+图片会先转成 WebP（长边压到 1536px）再存进 IndexedDB 的独立 store，消息里只留一个 id，所以对话记录不会因为图片而膨胀。删除会话时对应图片一并清理，页面加载时也会清掉没人引用的孤儿图片。
+
+API Key 只保存在当前浏览器的 localStorage，不会写入服务端存储。对话与图片同理，只存在本机。
 
 ## 可选：限制访问
 
@@ -73,7 +87,10 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 | 降级模型 | `wrangler.jsonc` → `vars.FALLBACK_MODEL` | 默认 `@cf/google/gemma-4-26b-a4b-it` |
 | 提供方列表 | `shared/models.ts` | 增删预设或改默认 Base URL |
 | 服务端默认密钥 | `wrangler secret put OPENAI_COMPAT_API_KEY` | 可选；让访客不填 Key 也能用某个服务商 |
-| 限流 | `wrangler.jsonc` → `ratelimits` | 默认 12 次 / 60 秒 / IP |
+| 默认图像模型 | `wrangler.jsonc` → `vars.IMAGE_MODEL` | 默认 `@cf/black-forest-labs/flux-2-klein-9b` |
+| 图像模型清单 | `shared/images.ts` | 增删模型、改尺寸范围与计费估算 |
+| 图像服务端密钥 | `wrangler secret put IMAGE_API_KEY` | 可选；配合 `IMAGE_BASE_URL` 让访客不填 Key 也能画图 |
+| 限流 | `wrangler.jsonc` → `ratelimits` | 对话 12 次 / 60 秒 / IP，画图 3 次 / 60 秒 / IP |
 
 ## 已知限制
 
@@ -84,7 +101,11 @@ Cloudflare 控制台 → **Zero Trust** → **Access** → **Applications** → 
 - 思考内容计入输出 tokens；默认模型开思考时，每轮消耗的 Neurons 约为关闭时的数倍，免费额度用得更快
 - Token 用量里的「累计」是每轮实际发出的输入加输出之和，历史会重复携带，所以通常远大于「本轮输入」；提供商不返回用量时，数字是按字符估算的近似值
 - 每轮只带最近 20 条消息，长对话不会无限增长
-- 对话不跨设备同步（没有账号系统）
+- 对话与图片都不跨设备同步（没有账号系统）
+- **画图很吃额度**：`flux-2-klein-9b` 约 1364 neurons/张，免费额度一天只够约 7 张；`flux-2-klein-4b` 约 104、`flux-1-schnell` 约 58。公开站点建议换成便宜的模型，或者用 Cloudflare Access 限制访问
+- `flux-1-schnell` 只接受 `prompt` 与 `steps`，尺寸固定，比例选择对它无效
+- 图像模型不返回 token 用量，画图不参与对话的 token 统计
+- 图生图（上传参考图）尚未实现
 
 ## 本地运行
 

@@ -1,6 +1,7 @@
 import { handleCatalog } from "./catalog";
 import { handleChat } from "./chat";
 import { jsonError } from "./http";
+import { handleImage } from "./images";
 import { errorMessage, type Env } from "./types";
 
 export default {
@@ -9,6 +10,7 @@ export default {
 
     try {
       if (url.pathname === "/api/chat") return await handleChat(request, env);
+      if (url.pathname === "/api/image") return await handleImage(request, env);
       if (url.pathname === "/api/catalog" && request.method === "GET") {
         return await handleCatalog(env);
       }

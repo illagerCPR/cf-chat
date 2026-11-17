@@ -1,3 +1,8 @@
+import {
+  IMAGE_PRESETS,
+  IMAGE_RATIOS,
+  WORKERS_AI_IMAGE_MODELS,
+} from "../shared/images";
 import { COMPAT_PRESETS, WORKERS_AI_MODELS } from "../shared/models";
 import { json } from "./http";
 import type { Env } from "./types";
@@ -14,5 +19,13 @@ export async function handleCatalog(env: Env): Promise<Response> {
     compatPresets: COMPAT_PRESETS,
     mock: env.MOCK_AI === "true",
     serverKey: Boolean(env.OPENAI_COMPAT_API_KEY),
+    images: {
+      configured: Boolean(env.AI),
+      defaultModel: env.IMAGE_MODEL ?? WORKERS_AI_IMAGE_MODELS[0].id,
+      models: WORKERS_AI_IMAGE_MODELS,
+      presets: IMAGE_PRESETS,
+      ratios: IMAGE_RATIOS,
+      serverKey: Boolean(env.IMAGE_API_KEY),
+    },
   });
 }

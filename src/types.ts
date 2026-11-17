@@ -13,6 +13,14 @@ export interface Env {
   OPENAI_COMPAT_BASE_URL?: string;
   OPENAI_COMPAT_API_KEY?: string;
   OPENAI_COMPAT_MODEL?: string;
+
+  /** Image generation: default Workers AI model and its rate limiter. */
+  IMAGE_MODEL?: string;
+  IMAGE_RATE_LIMITER?: RateLimit;
+
+  /** Optional server-side default for third-party image providers. */
+  IMAGE_BASE_URL?: string;
+  IMAGE_API_KEY?: string;
 }
 
 /** One event in the normalized stream that the browser consumes. */

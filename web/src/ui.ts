@@ -5,9 +5,33 @@ import {
   migrateWorkersAIModel,
 } from "../../shared/models";
 import type { ProviderKind } from "../../shared/models";
+import {
+  IMAGE_PRESETS,
+  IMAGE_RATIOS,
+  WORKERS_AI_IMAGE_MODELS,
+  clampSize,
+  estimateNeurons,
+  findImageModel,
+  findImagePreset,
+  findRatio,
+} from "../../shared/images";
+import type { ImageProviderKind } from "../../shared/images";
 import { estimatedUsage, estimatePromptTokens } from "../../shared/tokens";
 import type { Usage } from "../../shared/tokens";
 import { ChatError, fetchCatalog, streamChat, type Catalog, type StreamEvent } from "./api";
+import {
+  ImageError,
+  generateImages,
+  type ImageRequest,
+  type ImageResponse,
+} from "./image-api";
+import {
+  deleteImages,
+  downloadImage,
+  imageUrl,
+  pruneImages,
+  saveImage,
+} from "./image-store";
 import {
   applyBackground,
   loadBackgroundImage,
@@ -24,6 +48,7 @@ import {
   saveSettings,
   toApiMessages,
   type Conversation,
+  type MessageImage,
   type MessageMeta,
   type MessageRecord,
   type Settings,
@@ -72,6 +97,18 @@ interface Elements {
   stop: HTMLButtonElement;
   usageSummary: HTMLElement;
   settingsDialog: HTMLDialogElement;
+  modeSwitch: HTMLElement;
+  modeChat: HTMLButtonElement;
+  modeImage: HTMLButtonElement;
+  imageBar: HTMLElement;
+  imageRatio: HTMLSelectElement;
+  imageCount: HTMLSelectElement;
+  imageHint: HTMLElement;
+  composerHint: HTMLElement;
+  lightbox: HTMLDialogElement;
+  lightboxImage: HTMLImageElement;
+  lightboxCaption: HTMLElement;
+  lightboxClose: HTMLButtonElement;
 }
 
 export class App {
@@ -81,6 +118,8 @@ export class App {
   private controller: AbortController | null = null;
   private catalog: Catalog | null = null;
   private backgroundImage: string | null = null;
+  /** Which composer mode is active; image mode sends to /api/image. */
+  private mode: "chat" | "image" = "chat";
 
   private readonly els: Elements = {
     sidebar: must("#sidebar"),
@@ -100,6 +139,18 @@ export class App {
     stop: must("#stop"),
     usageSummary: must("#usage-summary"),
     settingsDialog: must("#settings-dialog"),
+    modeSwitch: must("#mode-switch"),
+    modeChat: must("#mode-chat"),
+    modeImage: must("#mode-image"),
+    imageBar: must("#image-bar"),
+    imageRatio: must("#image-ratio"),
+    imageCount: must("#image-count"),
+    imageHint: must("#image-hint"),
+    composerHint: must("#composer-hint"),
+    lightbox: must("#lightbox"),
+    lightboxImage: must("#lightbox-image"),
+    lightboxCaption: must("#lightbox-caption"),
+    lightboxClose: must("#lightbox-close"),
   };
 
   constructor() {
@@ -130,6 +181,17 @@ export class App {
     this.bindEvents();
     this.renderSidebar();
     this.updateChrome();
+    this.syncMode();
+
+    // Image blobs outlive the messages that referenced them; drop the orphans
+    // once per page load so the store does not grow forever.
+    const referenced = new Set<string>();
+    for (const conversation of this.conversations) {
+      for (const message of conversation.messages) {
+        for (const image of message.images ?? []) referenced.add(image.id);
+      }
+    }
+    void pruneImages(referenced);
 
     if (this.conversations.length > 0) {
       this.selectConversation(this.conversations[0].id);
@@ -142,6 +204,14 @@ export class App {
 
   private renderEmpty(): void {
     const demo = this.settings.provider === "mock";
+    if (this.mode === "image") {
+      this.els.messages.innerHTML = `
+        <section class="empty-state">
+          <h2>画一张图</h2>
+          <p>用中文或英文描述画面即可。默认使用 Cloudflare Workers AI 的 FLUX.2 klein 9B；想换模型或用自己的密钥，在设置里调整。图片保存在本浏览器。</p>
+        </section>`;
+      return;
+    }
     this.els.messages.innerHTML = `
       <section class="empty-state">
         <h2>${demo ? "本地演示模式" : "开始一段对话"}</h2>
@@ -226,6 +296,122 @@ export class App {
     return details;
   }
 
+  private buildImageGallery(images: MessageImage[], prompt: string): HTMLElement {
+    const gallery = document.createElement("div");
+    gallery.className = "gallery";
+    if (images.length === 1) gallery.classList.add("single");
+
+    for (const image of images) {
+      const figure = document.createElement("figure");
+      figure.className = "shot";
+
+      const frame = document.createElement("div");
+      frame.className = "shot-frame";
+      frame.style.aspectRatio = `${image.width || 1} / ${image.height || 1}`;
+
+      const placeholder = document.createElement("div");
+      placeholder.className = "shot-loading";
+      placeholder.textContent = "载入中…";
+      frame.append(placeholder);
+
+      const img = document.createElement("img");
+      img.alt = prompt.slice(0, 120);
+      img.loading = "lazy";
+      img.decoding = "async";
+      void imageUrl(image.id).then((url) => {
+        if (!url) {
+          placeholder.textContent = "图片已丢失";
+          return;
+        }
+        img.src = url;
+        placeholder.remove();
+        frame.append(img);
+      });
+
+      img.addEventListener("click", () => this.openLightbox(img.src, prompt));
+
+      const actions = document.createElement("div");
+      actions.className = "shot-actions";
+
+      const download = textButton("下载");
+      download.addEventListener("click", () => {
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        void downloadImage(image.id, `cf-chat-${stamp}.webp`);
+      });
+
+      const copy = textButton("复制");
+      copy.addEventListener("click", () => {
+        void this.copyImage(image.id).then((ok) => {
+          copy.textContent = ok ? "已复制" : "复制失败";
+          window.setTimeout(() => {
+            copy.textContent = "复制";
+          }, 1200);
+        });
+      });
+
+      actions.append(download, copy);
+      figure.append(frame, actions);
+      gallery.append(figure);
+    }
+
+    return gallery;
+  }
+
+  private async copyImage(id: string): Promise<boolean> {
+    try {
+      if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return false;
+      const url = await imageUrl(id);
+      if (!url) return false;
+      const blob = await (await fetch(url)).blob();
+      // Only PNG is universally accepted by the async clipboard API.
+      const png = blob.type === "image/png" ? blob : await this.toPng(blob);
+      if (!png) return false;
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async toPng(blob: Blob): Promise<Blob | null> {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d");
+      if (!context) return null;
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      return await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((result) => resolve(result), "image/png");
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private openLightbox(src: string, caption: string): void {
+    if (!src) return;
+    this.els.lightboxImage.src = src;
+    this.els.lightboxCaption.textContent = caption;
+    if (typeof this.els.lightbox.showModal === "function") this.els.lightbox.showModal();
+    else this.els.lightbox.setAttribute("open", "");
+  }
+
+  /**
+   * Removes the retry button from every message.
+   *
+   * Only the newest reply may offer "重新生成 / 重新画". Appending a new reply
+   * leaves the previous one's button in the DOM, so it has to be cleared
+   * explicitly before the new node is added.
+   */
+  private clearRetryButtons(): void {
+    for (const button of this.els.messages.querySelectorAll<HTMLElement>("[data-retry]")) {
+      button.remove();
+    }
+  }
+
   private buildMessage(record: MessageRecord, isLast = false, usage?: Usage): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = `msg ${record.role}`;
@@ -247,11 +433,17 @@ export class App {
         body.append(this.buildThinkingBlock(record.reasoning, false));
       }
 
-      const prose = document.createElement("div");
-      prose.className = "prose";
-      prose.innerHTML = renderMarkdown(record.content);
-      decorateLinks(prose);
-      body.append(prose);
+      if (record.images?.length) {
+        body.append(this.buildImageGallery(record.images, record.imagePrompt ?? ""));
+      }
+
+      if (record.content.trim() || !record.images?.length) {
+        const prose = document.createElement("div");
+        prose.className = "prose";
+        prose.innerHTML = renderMarkdown(record.content);
+        decorateLinks(prose);
+        body.append(prose);
+      }
 
       if (record.error) {
         const note = document.createElement("p");
@@ -280,7 +472,7 @@ export class App {
         body.append(line);
       }
 
-      if (record.content.trim() || isLast) {
+      if (record.content.trim() || record.images?.length || isLast) {
         const actions = document.createElement("div");
         actions.className = "actions";
 
@@ -298,7 +490,8 @@ export class App {
         }
 
         if (isLast) {
-          const retry = textButton("重新生成");
+          const retry = textButton(record.images?.length ? "重新画" : "重新生成");
+          retry.dataset.retry = "1";
           retry.addEventListener("click", () => void this.regenerate());
           actions.append(retry);
         }
@@ -340,6 +533,11 @@ export class App {
     this.els.chatTitle.textContent = conversation?.title ?? "新对话";
     this.updateUsageSummary();
 
+    if (this.mode === "image") {
+      this.els.modelChip.textContent = this.imageModelLabel();
+      return;
+    }
+
     if (this.settings.provider === "mock") {
       this.els.modelChip.textContent = "演示模式";
       return;
@@ -353,6 +551,123 @@ export class App {
     const preset = findPreset(this.settings.presetId);
     const model = this.compatModel();
     this.els.modelChip.textContent = preset ? `${preset.label} · ${shortModelName(model)}` : shortModelName(model);
+  }
+
+  // ------------------------------------------------------------------- images
+
+  /** The Workers AI image model this session would use, or undefined. */
+  private imageModel() {
+    const id = this.settings.imageModel || this.catalog?.images.defaultModel || "";
+    return findImageModel(id) ?? WORKERS_AI_IMAGE_MODELS[0];
+  }
+
+  private imageModelLabel(): string {
+    if (this.settings.imageProvider === "mock") return "演示模式 · 画图";
+    if (this.settings.imageProvider === "openai-compatible") {
+      const preset = findImagePreset(this.settings.imagePresetId);
+      const model = this.imageCompatModel();
+      return preset ? `${preset.label} · ${shortModelName(model)}` : shortModelName(model);
+    }
+    return shortModelName(this.imageModel().id);
+  }
+
+  private imageCompatModel(): string {
+    const typed = this.settings.imageCompatModel.trim();
+    if (typed) return typed;
+    return findImagePreset(this.settings.imagePresetId)?.models[0] ?? "";
+  }
+
+  private imageKey(): string | undefined {
+    if (this.settings.imageProvider !== "openai-compatible") return undefined;
+    const key = this.settings.keys[this.settings.imagePresetId]?.trim();
+    return key || undefined;
+  }
+
+  /** Refreshes the ratio/count bar and the cost hint under the composer. */
+  private syncMode(): void {
+    const image = this.mode === "image";
+    this.els.modeChat.classList.toggle("active", !image);
+    this.els.modeImage.classList.toggle("active", image);
+    this.els.modeChat.setAttribute("aria-selected", String(!image));
+    this.els.modeImage.setAttribute("aria-selected", String(image));
+    this.els.imageBar.hidden = !image;
+    this.els.input.placeholder = image ? "描述你想要的画面…" : "问点什么…";
+    this.els.composerHint.textContent = image
+      ? "Enter 生成 · Shift + Enter 换行 · 图片保存在本浏览器"
+      : "Enter 发送 · Shift + Enter 换行 · 对话保存在本浏览器";
+
+    if (!image) {
+      this.els.imageHint.textContent = "";
+      return;
+    }
+
+    this.els.imageRatio.value = this.settings.imageRatio;
+    this.els.imageCount.value = String(this.settings.imageCount);
+    this.els.imageHint.textContent = this.imageCostHint();
+    this.updateChrome();
+  }
+
+  private imageCostHint(): string {
+    if (this.settings.imageProvider === "mock") return "演示模式，不消耗额度";
+    if (this.settings.imageProvider === "openai-compatible") {
+      const preset = findImagePreset(this.settings.imagePresetId);
+      return preset ? `${this.settings.imageCount} 张 · 按张计费` : "";
+    }
+
+    const spec = this.imageModel();
+    const ratio = findRatio(this.settings.imageRatio);
+    const { width, height } = clampSize(spec, ratio);
+    const steps = this.settings.imageSteps || spec.steps?.default || 1;
+    const neurons = estimateNeurons(spec, width, height, steps) * this.settings.imageCount;
+    const size = spec.sizeControl ? `${width}×${height}` : "固定尺寸";
+    return `${size} · 约 ${Math.round(neurons).toLocaleString("zh-CN")} neurons（免费额度 10,000/天）`;
+  }
+
+  private setMode(mode: "chat" | "image"): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.syncMode();
+    const conversation = this.activeConversation();
+    if (conversation && conversation.messages.length > 0) this.renderConversation(conversation);
+    else this.renderEmpty();
+    this.els.input.focus();
+  }
+
+  private buildImageRequest(prompt: string): ImageRequest {
+    const shared = {
+      prompt,
+      negativePrompt: this.settings.imageNegativePrompt.trim() || undefined,
+      ratio: this.settings.imageRatio,
+      count: this.settings.imageCount,
+    };
+
+    if (this.settings.imageProvider === "mock") {
+      return { ...shared, provider: "mock" as const };
+    }
+    if (this.settings.imageProvider === "openai-compatible") {
+      if (this.settings.imagePresetId === "custom") {
+        return {
+          ...shared,
+          provider: "openai-compatible" as const,
+          presetId: "custom",
+          baseUrl: this.settings.imageCustomBaseUrl.trim(),
+          model: this.imageCompatModel(),
+        };
+      }
+      return {
+        ...shared,
+        provider: "openai-compatible" as const,
+        presetId: this.settings.imagePresetId,
+        model: this.imageCompatModel(),
+      };
+    }
+    return {
+      ...shared,
+      provider: "workers-ai" as const,
+      model: this.imageModel().id,
+      steps: this.settings.imageSteps || undefined,
+      guidance: this.settings.imageGuidance || undefined,
+    };
   }
 
   private updateUsageSummary(): void {
@@ -428,6 +743,12 @@ export class App {
   }
 
   private async deleteConversation(id: string): Promise<void> {
+    const removed = this.conversations.find((conversation) => conversation.id === id);
+    const orphaned: string[] = [];
+    for (const message of removed?.messages ?? []) {
+      for (const image of message.images ?? []) orphaned.push(image.id);
+    }
+
     this.conversations = this.conversations.filter((conversation) => conversation.id !== id);
     if (this.activeId === id) {
       this.activeId = null;
@@ -436,6 +757,7 @@ export class App {
     this.renderSidebar();
     this.updateChrome();
     await saveConversations(this.conversations);
+    void deleteImages(orphaned);
   }
 
   // ------------------------------------------------------------------ sending
@@ -444,6 +766,11 @@ export class App {
     if (this.controller) return;
     const text = this.els.input.value.trim();
     if (!text) return;
+
+    if (this.mode === "image") {
+      await this.sendImage(text);
+      return;
+    }
 
     if (this.settings.provider === "openai-compatible" && !this.currentKey() && !this.catalog?.serverKey) {
       this.openSettings("这个提供商需要 API Key，先填一个再发消息。");
@@ -468,6 +795,7 @@ export class App {
     conversation.updatedAt = Date.now();
 
     this.els.messages.querySelector(".empty-state")?.remove();
+    this.clearRetryButtons();
     this.els.messages.append(this.buildMessage(userMessage));
     this.renderSidebar();
     this.updateChrome();
@@ -480,6 +808,7 @@ export class App {
     const assistant = createMessage("assistant", "");
     conversation.messages.push(assistant);
 
+    this.clearRetryButtons();
     const node = this.buildMessage(assistant, true);
     this.els.messages.append(node);
     this.scrollToBottom(true);
@@ -623,6 +952,119 @@ export class App {
     }
   }
 
+  // ------------------------------------------------------------------ images
+
+  private async sendImage(prompt: string): Promise<void> {
+    if (this.settings.imageProvider === "openai-compatible") {
+      if (!this.imageKey() && !this.catalog?.images.serverKey) {
+        this.openSettings("这个图像提供商需要 API Key，先填一个再画图。");
+        return;
+      }
+      if (this.settings.imagePresetId === "custom" && !this.settings.imageCustomBaseUrl.trim()) {
+        this.openSettings("自定义图像提供商需要先填写 Base URL。");
+        return;
+      }
+    }
+
+    this.els.input.value = "";
+    this.resizeInput();
+
+    const conversation = this.ensureConversation();
+    const userMessage = createMessage("user", prompt);
+    conversation.messages.push(userMessage);
+    if (conversation.messages.filter((message) => message.role === "user").length === 1) {
+      conversation.title = truncateTitle(prompt);
+    }
+    conversation.updatedAt = Date.now();
+
+    this.els.messages.querySelector(".empty-state")?.remove();
+    this.clearRetryButtons();
+    this.els.messages.append(this.buildMessage(userMessage));
+    this.renderSidebar();
+    this.updateChrome();
+    this.scrollToBottom(true);
+
+    await this.requestImages(conversation, prompt);
+  }
+
+  private async requestImages(conversation: Conversation, prompt: string): Promise<void> {
+    const assistant = createMessage("assistant", "");
+    assistant.imagePrompt = prompt;
+    assistant.imageRatio = this.settings.imageRatio;
+    conversation.messages.push(assistant);
+
+    this.clearRetryButtons();
+    const node = this.buildMessage(assistant, true);
+    this.els.messages.append(node);
+    this.scrollToBottom(true);
+
+    const controller = new AbortController();
+    this.controller = controller;
+    this.setStreaming(true);
+    this.showStatus("正在画图…");
+
+    let meta: MessageMeta | undefined;
+    let images: MessageImage[] = [];
+    let error: string | undefined;
+
+    try {
+      const response: ImageResponse = await generateImages(
+        this.buildImageRequest(prompt),
+        this.imageKey(),
+        controller.signal,
+      );
+
+      // Store every picture before touching the DOM, so a storage failure is
+      // reported as a failed request rather than a half-rendered gallery.
+      const saved: MessageImage[] = [];
+      for (const image of response.images) {
+        const stored = await saveImage(image.base64, image.mimeType);
+        saved.push({
+          id: stored.id,
+          width: stored.width || image.width,
+          height: stored.height || image.height,
+          bytes: stored.bytes,
+        });
+      }
+      images = saved;
+      meta = {
+        model: response.meta.model,
+        provider: response.meta.provider,
+      };
+    } catch (caught) {
+      if (isAbortError(caught)) {
+        error = "已取消。";
+      } else if (caught instanceof ImageError) {
+        error = caught.message;
+        if (caught.status === 401) this.openSettings(caught.message);
+        this.showStatus(caught.message, true);
+      } else if (caught instanceof Error) {
+        error = caught.message;
+        this.showStatus(caught.message, true);
+      } else {
+        error = "画图失败。";
+      }
+    } finally {
+      assistant.images = images;
+      if (meta) assistant.meta = meta;
+      if (error) assistant.error = error;
+
+      this.controller = null;
+      this.setStreaming(false);
+      conversation.updatedAt = Date.now();
+      conversation.messages = conversation.messages.map((message) =>
+        message.id === assistant.id ? assistant : message,
+      );
+      await saveConversations(this.conversations);
+      this.renderSidebar();
+      this.updateChrome();
+
+      const fresh = this.buildMessage(assistant, true);
+      node.replaceWith(fresh);
+      this.scrollToBottom();
+    }
+  }
+
   private handleEvent(
     event: StreamEvent,
     handlers: {
@@ -700,8 +1142,22 @@ export class App {
     const last = conversation.messages[conversation.messages.length - 1];
     if (!last || last.role !== "assistant") return;
 
+    // An image reply is retried with the prompt that produced it, not with the
+    // chat pipeline; the ratio is restored so the framing stays the same.
+    const imagePrompt = last.imagePrompt;
+    const imageRatio = last.imageRatio;
+    const staleIds = (last.images ?? []).map((image) => image.id);
+
     conversation.messages.pop();
     this.renderConversation(conversation);
+
+    if (imagePrompt) {
+      if (imageRatio) this.settings = { ...this.settings, imageRatio };
+      await this.requestImages(conversation, imagePrompt);
+      void deleteImages(staleIds);
+      return;
+    }
+
     await this.requestAssistant(conversation);
   }
 
@@ -758,6 +1214,38 @@ export class App {
     this.els.closeSidebar.addEventListener("click", () => this.toggleSidebar(false));
     this.els.scrim.addEventListener("click", () => this.toggleSidebar(false));
     this.els.stop.addEventListener("click", () => this.stop());
+
+    this.els.modeChat.addEventListener("click", () => this.setMode("chat"));
+    this.els.modeImage.addEventListener("click", () => this.setMode("image"));
+
+    this.els.imageRatio.replaceChildren(
+      ...IMAGE_RATIOS.map((ratio) => {
+        const option = document.createElement("option");
+        option.value = ratio.id;
+        option.textContent = ratio.label;
+        return option;
+      }),
+    );
+    this.els.imageRatio.addEventListener("change", () => {
+      this.settings = { ...this.settings, imageRatio: this.els.imageRatio.value };
+      saveSettings(this.settings);
+      this.els.imageHint.textContent = this.imageCostHint();
+    });
+    this.els.imageCount.addEventListener("change", () => {
+      const count = Number(this.els.imageCount.value);
+      this.settings = {
+        ...this.settings,
+        imageCount: Number.isFinite(count) ? Math.min(4, Math.max(1, count)) : 1,
+      };
+      saveSettings(this.settings);
+      this.els.imageHint.textContent = this.imageCostHint();
+    });
+
+    this.els.lightboxClose.addEventListener("click", () => this.els.lightbox.close());
+    this.els.lightbox.addEventListener("click", (event) => {
+      // Clicking the backdrop (not the picture) closes the viewer.
+      if (event.target === this.els.lightbox) this.els.lightbox.close();
+    });
 
     this.els.composer.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -898,9 +1386,78 @@ export class App {
             <label for="set-system">系统提示词</label>
             <textarea id="set-system" placeholder="可选。例如：你是一个简洁的中文助手，回答尽量短。"></textarea>
           </div>
+
+          <h3 class="settings-section">画图</h3>
+
+          <div class="field">
+            <label for="set-image-provider">图像提供商</label>
+            <select id="set-image-provider">
+              <option value="workers-ai">Workers AI（内置，无需密钥）</option>
+              <option value="openai-compatible">OpenAI 兼容图像接口（自带密钥）</option>
+              ${this.catalog?.mock ? `<option value="mock">演示模式（本地占位图）</option>` : ""}
+            </select>
+          </div>
+
+          <div class="field" data-image-section="workers">
+            <label for="set-image-model">图像模型</label>
+            <select id="set-image-model">
+              ${WORKERS_AI_IMAGE_MODELS.map(
+                (model) => `<option value="${model.id}">${model.label}</option>`,
+              ).join("")}
+            </select>
+            <p class="hint" id="image-model-hint"></p>
+          </div>
+
+          <div class="field" data-image-section="compat">
+            <label for="set-image-preset">服务商</label>
+            <select id="set-image-preset">
+              ${IMAGE_PRESETS.map(
+                (preset) => `<option value="${preset.id}">${preset.label}</option>`,
+              ).join("")}
+              <option value="custom">自定义（OpenAI 兼容）</option>
+            </select>
+            <p class="hint" id="image-preset-hint"></p>
+          </div>
+
+          <div class="field" data-image-section="compat">
+            <label for="set-image-key">图像 API Key</label>
+            <input id="set-image-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+            <p class="hint" id="image-key-hint">只保存在本浏览器，请求时经 Worker 转发，服务端不做存储。</p>
+          </div>
+
+          <div class="field" data-image-section="compat">
+            <label for="set-image-compat-model">图像模型名称</label>
+            <input id="set-image-compat-model" type="text" list="image-compat-models" spellcheck="false" />
+            <datalist id="image-compat-models"></datalist>
+          </div>
+
+          <div class="field" data-image-section="compat" id="image-baseurl-field">
+            <label for="set-image-baseurl">图像 Base URL</label>
+            <input id="set-image-baseurl" type="text" spellcheck="false" placeholder="https://example.com/v1" />
+            <p class="hint">必须是 https 公网地址，且兼容 /images/generations 接口。</p>
+          </div>
+
+          <div class="field-row" data-image-section="workers">
+            <div class="field">
+              <label for="set-image-steps">推理步数</label>
+              <input id="set-image-steps" type="number" min="0" max="50" step="1" />
+              <p class="hint">留 0 使用模型默认值。</p>
+            </div>
+            <div class="field">
+              <label for="set-image-guidance">引导强度</label>
+              <input id="set-image-guidance" type="number" min="0" max="10" step="0.5" />
+              <p class="hint">越高越贴合提示词，留 0 用默认值。</p>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="set-image-negative">负面提示词</label>
+            <input id="set-image-negative" type="text" placeholder="可选。例如：模糊、多余的手指" />
+            <p class="hint">仅部分模型支持（Leonardo 系列与 OpenAI 兼容接口）。</p>
+          </div>
         </div>
         <div class="settings-foot">
-          <span class="note">对话与密钥均保存在浏览器本地</span>
+          <span class="note">对话、图片与密钥均保存在浏览器本地</span>
           <button type="submit" class="primary-btn">保存</button>
         </div>
       </form>`;
@@ -928,6 +1485,20 @@ export class App {
     const bgDimValue = dialog.querySelector<HTMLOutputElement>("#bg-dim-value");
     const bgHint = dialog.querySelector<HTMLElement>("#bg-hint");
     const systemInput = dialog.querySelector<HTMLTextAreaElement>("#set-system");
+    const imageProviderSelect = dialog.querySelector<HTMLSelectElement>("#set-image-provider");
+    const imageModelSelect = dialog.querySelector<HTMLSelectElement>("#set-image-model");
+    const imageModelHint = dialog.querySelector<HTMLElement>("#image-model-hint");
+    const imagePresetSelect = dialog.querySelector<HTMLSelectElement>("#set-image-preset");
+    const imagePresetHint = dialog.querySelector<HTMLElement>("#image-preset-hint");
+    const imageKeyInput = dialog.querySelector<HTMLInputElement>("#set-image-key");
+    const imageKeyHint = dialog.querySelector<HTMLElement>("#image-key-hint");
+    const imageCompatModelInput = dialog.querySelector<HTMLInputElement>("#set-image-compat-model");
+    const imageCompatModelList = dialog.querySelector<HTMLDataListElement>("#image-compat-models");
+    const imageBaseUrlInput = dialog.querySelector<HTMLInputElement>("#set-image-baseurl");
+    const imageBaseUrlField = dialog.querySelector<HTMLElement>("#image-baseurl-field");
+    const imageStepsInput = dialog.querySelector<HTMLInputElement>("#set-image-steps");
+    const imageGuidanceInput = dialog.querySelector<HTMLInputElement>("#set-image-guidance");
+    const imageNegativeInput = dialog.querySelector<HTMLInputElement>("#set-image-negative");
     const closeButton = dialog.querySelector<HTMLButtonElement>("[data-close]");
 
     if (
@@ -954,6 +1525,20 @@ export class App {
       !bgDimValue ||
       !bgHint ||
       !systemInput ||
+      !imageProviderSelect ||
+      !imageModelSelect ||
+      !imageModelHint ||
+      !imagePresetSelect ||
+      !imagePresetHint ||
+      !imageKeyInput ||
+      !imageKeyHint ||
+      !imageCompatModelInput ||
+      !imageCompatModelList ||
+      !imageBaseUrlInput ||
+      !imageBaseUrlField ||
+      !imageStepsInput ||
+      !imageGuidanceInput ||
+      !imageNegativeInput ||
       !closeButton
     ) {
       return;
@@ -981,6 +1566,16 @@ export class App {
     }
     systemInput.value = this.settings.systemPrompt;
 
+    imageProviderSelect.value = this.settings.imageProvider;
+    imageModelSelect.value = this.settings.imageModel || this.catalog?.images.defaultModel || WORKERS_AI_IMAGE_MODELS[0].id;
+    imagePresetSelect.value = this.settings.imagePresetId;
+    imageKeyInput.value = this.settings.keys[this.settings.imagePresetId] ?? "";
+    imageCompatModelInput.value = this.settings.imageCompatModel;
+    imageBaseUrlInput.value = this.settings.imageCustomBaseUrl;
+    imageStepsInput.value = String(this.settings.imageSteps);
+    imageGuidanceInput.value = String(this.settings.imageGuidance);
+    imageNegativeInput.value = this.settings.imageNegativePrompt;
+
     /** undefined = unchanged, null = remove the current image. */
     let pendingBackground: string | null | undefined;
 
@@ -991,6 +1586,44 @@ export class App {
         field.hidden = field.dataset.section !== section;
       }
       baseUrlField.hidden = presetSelect.value !== "custom";
+    };
+
+    const syncImageSections = (): void => {
+      const provider = imageProviderSelect.value as ImageProviderKind;
+      const section =
+        provider === "workers-ai" ? "workers" : provider === "mock" ? "none" : "compat";
+      for (const field of dialog.querySelectorAll<HTMLElement>("[data-image-section]")) {
+        field.hidden = field.dataset.imageSection !== section;
+      }
+      imageBaseUrlField.hidden = imagePresetSelect.value !== "custom";
+
+      const spec = findImageModel(imageModelSelect.value);
+      imageModelHint.textContent = spec
+        ? `${spec.note}${spec.sizeControl ? "" : "（该模型不接受宽高参数）"}`
+        : "";
+    };
+
+    const syncImagePreset = (): void => {
+      const current = findImagePreset(imagePresetSelect.value);
+      const models = current?.models ?? [];
+      imageCompatModelList.replaceChildren(
+        ...models.map((model) => {
+          const option = document.createElement("option");
+          option.value = model;
+          return option;
+        }),
+      );
+      imageKeyInput.value = this.settings.keys[imagePresetSelect.value] ?? "";
+      imageCompatModelInput.value = models[0] ?? "";
+      imageCompatModelInput.placeholder = models[0] ?? "模型名称";
+      imagePresetHint.textContent = current?.note ?? "自定义接口需兼容 /images/generations。";
+
+      if (current?.keyUrl) {
+        imageKeyHint.innerHTML = `只保存在本浏览器。还没有密钥？<a href="${current.keyUrl}" target="_blank" rel="noopener noreferrer">去 ${current.label} 申请</a>。`;
+      } else {
+        imageKeyHint.textContent = "只保存在本浏览器，请求时经 Worker 转发，服务端不做存储。";
+      }
+      syncImageSections();
     };
 
     const syncPreset = (): void => {
@@ -1017,6 +1650,9 @@ export class App {
 
     providerSelect.addEventListener("change", syncSections);
     presetSelect.addEventListener("change", syncPreset);
+    imageProviderSelect.addEventListener("change", syncImageSections);
+    imageModelSelect.addEventListener("change", syncImageSections);
+    imagePresetSelect.addEventListener("change", syncImagePreset);
     tempInput.addEventListener("input", () => {
       tempValue.textContent = Number(tempInput.value).toFixed(1);
     });
@@ -1054,10 +1690,16 @@ export class App {
         if (typedKey) keys[presetSelect.value] = typedKey;
         else delete keys[presetSelect.value];
 
+        const typedImageKey = imageKeyInput.value.trim();
+        if (typedImageKey) keys[imagePresetSelect.value] = typedImageKey;
+        else delete keys[imagePresetSelect.value];
+
         const temperature = Number(tempInput.value);
         const maxTokens = Number(tokensInput.value);
         const dim = Number(bgDimInput.value);
         const thinkingValue = thinkingSelect.value;
+        const imageSteps = Number(imageStepsInput.value);
+        const imageGuidance = Number(imageGuidanceInput.value);
 
         if (pendingBackground !== undefined) {
           try {
@@ -1085,10 +1727,22 @@ export class App {
           showUsage: showUsageInput.checked,
           backgroundDim: Number.isFinite(dim) ? Math.min(90, Math.max(0, dim)) : 75,
           systemPrompt: systemInput.value,
+
+          imageProvider: imageProviderSelect.value as ImageProviderKind,
+          imageModel: imageModelSelect.value,
+          imagePresetId: imagePresetSelect.value,
+          imageCompatModel: imageCompatModelInput.value.trim(),
+          imageCustomBaseUrl: imageBaseUrlInput.value.trim(),
+          imageSteps: Number.isFinite(imageSteps) ? Math.min(50, Math.max(0, imageSteps)) : 0,
+          imageGuidance: Number.isFinite(imageGuidance)
+            ? Math.min(10, Math.max(0, imageGuidance))
+            : 0,
+          imageNegativePrompt: imageNegativeInput.value,
         };
         saveSettings(this.settings);
         applyBackground(this.backgroundImage, this.settings.backgroundDim);
         dialog.close();
+        this.syncMode();
         this.updateChrome();
 
         const conversation = this.activeConversation();
@@ -1099,6 +1753,8 @@ export class App {
 
     syncPreset();
     syncSections();
+    syncImagePreset();
+    syncImageSections();
 
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");

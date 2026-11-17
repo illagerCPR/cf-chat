@@ -1,5 +1,6 @@
 import { migrateWorkersAIModel } from "../../shared/models";
 import type { ChatMessage, ProviderKind, ThinkingMode } from "../../shared/models";
+import type { ImageProviderKind } from "../../shared/images";
 import type { Usage } from "../../shared/tokens";
 import { newId } from "./util";
 
@@ -8,6 +9,16 @@ export interface MessageMeta {
   provider: string;
   fallback?: boolean;
   reason?: string;
+}
+
+/** One generated picture attached to an assistant message. */
+export interface MessageImage {
+  /** Key into the separate IndexedDB image store. */
+  id: string;
+  width: number;
+  height: number;
+  /** Bytes after compression, shown in the UI. */
+  bytes: number;
 }
 
 export interface MessageRecord {
@@ -21,6 +32,12 @@ export interface MessageRecord {
   /** Token accounting for this reply; absent on old records and on errors. */
   usage?: Usage;
   error?: string;
+  /** Pictures produced by an image request; the message is then a gallery. */
+  images?: MessageImage[];
+  /** Prompt that produced `images`, kept so the reply can be regenerated. */
+  imagePrompt?: string;
+  /** Ratio id used for `images`, so a retry keeps the same framing. */
+  imageRatio?: string;
 }
 
 export interface Conversation {
@@ -47,6 +64,18 @@ export interface Settings {
   showUsage: boolean;
   backgroundDim: number;
   systemPrompt: string;
+
+  /** Image generation. */
+  imageProvider: ImageProviderKind;
+  imageModel: string;
+  imagePresetId: string;
+  imageCompatModel: string;
+  imageCustomBaseUrl: string;
+  imageRatio: string;
+  imageCount: number;
+  imageSteps: number;
+  imageGuidance: number;
+  imageNegativePrompt: string;
 }
 
 const SETTINGS_KEY = "cf-chat:settings:v1";
@@ -67,6 +96,17 @@ export function defaultSettings(): Settings {
     showUsage: true,
     backgroundDim: 75,
     systemPrompt: "",
+
+    imageProvider: "workers-ai",
+    imageModel: "",
+    imagePresetId: "tokenrhythm",
+    imageCompatModel: "qwen-image-2.0",
+    imageCustomBaseUrl: "",
+    imageRatio: "1:1",
+    imageCount: 1,
+    imageSteps: 0,
+    imageGuidance: 0,
+    imageNegativePrompt: "",
   };
 }
 
@@ -119,6 +159,36 @@ function normalizeSettings(raw: unknown): Settings {
         ? Math.min(90, Math.max(0, raw.backgroundDim))
         : base.backgroundDim,
     systemPrompt: typeof raw.systemPrompt === "string" ? raw.systemPrompt : base.systemPrompt,
+
+    imageProvider:
+      raw.imageProvider === "workers-ai" ||
+      raw.imageProvider === "openai-compatible" ||
+      raw.imageProvider === "mock"
+        ? raw.imageProvider
+        : base.imageProvider,
+    imageModel: typeof raw.imageModel === "string" ? raw.imageModel : base.imageModel,
+    imagePresetId: typeof raw.imagePresetId === "string" ? raw.imagePresetId : base.imagePresetId,
+    imageCompatModel:
+      typeof raw.imageCompatModel === "string" ? raw.imageCompatModel : base.imageCompatModel,
+    imageCustomBaseUrl:
+      typeof raw.imageCustomBaseUrl === "string" ? raw.imageCustomBaseUrl : base.imageCustomBaseUrl,
+    imageRatio: typeof raw.imageRatio === "string" ? raw.imageRatio : base.imageRatio,
+    imageCount:
+      typeof raw.imageCount === "number" && Number.isFinite(raw.imageCount)
+        ? Math.min(4, Math.max(1, Math.round(raw.imageCount)))
+        : base.imageCount,
+    imageSteps:
+      typeof raw.imageSteps === "number" && Number.isFinite(raw.imageSteps)
+        ? Math.max(0, Math.round(raw.imageSteps))
+        : base.imageSteps,
+    imageGuidance:
+      typeof raw.imageGuidance === "number" && Number.isFinite(raw.imageGuidance)
+        ? Math.max(0, raw.imageGuidance)
+        : base.imageGuidance,
+    imageNegativePrompt:
+      typeof raw.imageNegativePrompt === "string"
+        ? raw.imageNegativePrompt
+        : base.imageNegativePrompt,
   };
 }
 

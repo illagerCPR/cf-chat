@@ -6,7 +6,8 @@
 
 ```
 浏览器 SPA（Vite 构建，产物由 Worker 的静态资源托管）
-  │  POST /api/chat  { provider, model, messages, ... }
+  │  POST /api/chat   { provider, model, messages, ... }   → SSE
+  │  POST /api/image  { provider, model, prompt, ratio, ... } → JSON
   │  header: x-provider-key（BYOK 时携带）
   ▼
 单个 Worker（src/index.ts）
@@ -14,7 +15,11 @@
   │                   ├─ Workers AI binding（默认，免密钥）
   │                   ├─ OpenAI 兼容 HTTP（预设或自定义 Base URL）
   │                   └─ mock（仅本地，MOCK_AI=true 时可用）
-  └─ /api/catalog  → 前端可用的模型/提供商清单
+  ├─ /api/image    → 图像适配器 → JSON { images: [{ base64, mimeType, width, height }] }
+  │                   ├─ Workers AI binding（json / multipart 两种输入形状）
+  │                   ├─ OpenAI 兼容 /images/generations（强制 b64_json）
+  │                   └─ mock（本地 SVG 占位图）
+  └─ /api/catalog  → 前端可用的模型/提供商清单（含图像）
 ```
 
 设计要点：
@@ -24,15 +29,23 @@
 3. **只有一种流协议**。所有提供商都被归一化成 OpenAI 的 SSE 形状：正文走 `choices[0].delta.content`，思考过程走 `choices[0].delta.reasoning_content`，前端只写一个解析器。额外事件：`{"cf-chat": {...}}` 用于元信息（实际使用的模型、是否降级、`reset` 重试清屏、本轮 `usage`）。
 4. **不缓冲**。上游响应直接 `pipeThrough`/逐块转发，Worker 只是 I/O，不占 CPU（免费版 CPU 上限 10ms/次）。
 5. **客户端断开即取消**。前端 `AbortController` → `request.signal` → 上游 `fetch` 取消。
+6. **图像不走 SSE**。图像模型不流式，一次请求返回完整图片；`/api/image` 直接回 JSON，前端拿到 base64 后转 WebP 存 IndexedDB，消息里只留 id。
+7. **图像模型的输入形状不统一**，这是最容易踩的坑，所以做成数据（`shared/images.ts` 的 `input`/`output` 字段）而不是散落的 if：
+   - `flux-1-schnell`：普通 JSON，且 schema 是 `additionalProperties: false`，只认 `prompt` + `steps`，传宽高会 400。
+   - `flux-2-klein-9b` / `flux-2-klein-4b` / `flux-2-dev`：**multipart form-data**，即使只有提示词。binding 里必须 `new Response(form)` 拿到序列化 body 与带 boundary 的 content-type。
+   - `leonardo/phoenix-1.0`：JSON 输入，但输出是**二进制 JPEG**（其余模型都是 `{ image: base64 }`）。
+   - `leonardo/lucid-origin`：JSON 输入，`{ image: base64 }` 输出。
 
 ## 目录结构
 
 ```
 shared/models.ts          提供商预设、Workers AI 模型清单（前后端共用）
+shared/images.ts          图像模型清单（输入/输出形状、尺寸范围、计费估算）、比例、图像预设
 shared/tokens.ts          Usage 类型、字符估算、usage 归一化（前后端共用）
 src/
   index.ts                路由
   chat.ts                 请求校验、限流、提供商解析、降级逻辑
+  images.ts               /api/image：校验、限流、图像提供商解析
   catalog.ts              /api/catalog
   sse.ts                  归一化 SSE 输出
   http.ts                 JSON 辅助
@@ -41,11 +54,16 @@ src/
     workers-ai.ts         AI binding 适配（messages / Gemma prompt 双格式）
     openai-compatible.ts  OpenAI 兼容 SSE 透传
     mock.ts               本地演示
+    workers-ai-image.ts   图像 binding 适配（json/multipart 输入、base64/二进制输出归一化）
+    openai-image.ts       OpenAI 兼容 /images/generations
+    mock-image.ts         本地 SVG 占位图
 web/
-  index.html              页面骨架
-  src/ui.ts               应用控制器（渲染、流式、设置面板）
+  index.html              页面骨架（含模式切换、图像参数栏、灯箱）
+  src/ui.ts               应用控制器（渲染、流式、画图、设置面板）
   src/store.ts            设置与对话持久化
   src/api.ts              SSE 客户端
+  src/image-api.ts        /api/image 客户端
+  src/image-store.ts      图片压缩（WebP）与 IndexedDB 独立 store、孤儿清理
   src/usage.ts            单条回复与整段对话的 token 统计
   src/background.ts       背景图压缩与 IndexedDB 存取
   src/markdown.ts         marked + DOMPurify
@@ -118,20 +136,120 @@ data: [DONE]
 
 `completionTokens` 包含思考内容（DeepSeek 同时给出 `reasoningTokens`）。前端把 usage 随消息存进 IndexedDB；旧消息、被中断的流没有服务端数据时，在 `web/src/usage.ts` 里按同一套规则本地估算，并标 `≈`（整段对话里如果只有部分回复是估算的，改标「含估算」）。整段对话的「累计」是各轮 `promptTokens + completionTokens` 求和，因为每轮都会重新携带历史，它天然大于「本轮输入」。
 
+## /api/image 契约
+
+请求：
+
+```jsonc
+{
+  "provider": "workers-ai" | "openai-compatible" | "mock",
+  "presetId": "tokenrhythm",        // 或 "custom"
+  "baseUrl": "https://.../v1",      // 仅 custom 时使用
+  "model": "@cf/black-forest-labs/flux-2-klein-9b",
+  "prompt": "一只在窗台上晒太阳的橘猫，水彩风格",
+  "negativePrompt": "",             // 仅部分模型支持
+  "ratio": "1:1",                   // 1:1 / 16:9 / 9:16 / 4:3 / 3:4
+  "count": 1,                       // 1–4
+  "steps": 0,                       // 0 = 用模型默认值
+  "guidance": 0,                    // 0 = 用模型默认值
+  "seed": 12345                     // 可选
+}
+```
+
+校验规则：`prompt` 非空且 ≤2000 字符；`negativePrompt` ≤500 字符；`count` 1–4；`provider` 必须命中白名单。宽高由 `ratio` 经 `clampSize()` 收敛到模型允许的范围（`flux-2-*` 256–1920、`phoenix` 256–2048、`lucid-origin` 256–2500），客户端不能直接指定像素。
+
+响应：
+
+```jsonc
+{
+  "images": [
+    { "base64": "iVBORw0KGgo…", "mimeType": "image/png", "width": 1024, "height": 1024 }
+  ],
+  "meta": { "provider": "workers-ai", "model": "@cf/…", "width": 1024, "height": 1024, "steps": 4, "neurons": 1363.64 }
+}
+```
+
+`meta.neurons` 只是按官方价目表估算的额度消耗，用来在参数栏提示，不参与计费。OpenAI 兼容分支固定为 0。
+
+出错返回 JSON：`{ "error": { "code": "...", "message": "..." } }`，状态码透传上游（401/429 等）。
+
+### 各模型的输入形状
+
+| 模型 | 输入 | 输出 | 尺寸可控 | 步数 | 引导 | 负面提示词 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `flux-2-klein-9b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 |
+| `flux-2-klein-4b` | multipart | `{image}` base64 | 256–1920 | 固定 4 | 有 | 无 |
+| `flux-2-dev` | multipart | `{image}` base64 | 256–1920 | 1–50 | 有 | 无 |
+| `flux-1-schnell` | json | `{image}` base64 | **不可控** | 1–8 | 无 | 无 |
+| `phoenix-1.0` | json | **二进制 JPEG** | 256–2048 | 1–50 | 有 | 有 |
+| `lucid-origin` | json | `{image}` base64 | 256–2500 | 1–40 | 有 | 无 |
+
+multipart 的写法（binding 侧）：
+
+```ts
+const form = new FormData();
+form.append("prompt", prompt);
+form.append("width", String(width));
+form.append("height", String(height));
+// FormData 不暴露序列化后的 body 与 boundary，必须过一遍 Response。
+const serialized = new Response(form);
+await env.AI.run(model, {
+  multipart: {
+    body: serialized.body,
+    contentType: serialized.headers.get("content-type")!,
+  },
+});
+```
+
+### 额度消耗
+
+按官方价目表（10000 neurons/天免费额度）：
+
+| 模型 | 1024×1024 约消耗 | 免费额度约可画 |
+| --- | --- | --- |
+| `flux-2-klein-9b` | 1364 neurons | 7 张 |
+| `flux-2-klein-4b` | 104 neurons | 96 张 |
+| `flux-1-schnell` | 58 neurons | 170 张 |
+| `flux-2-dev` | 3750 neurons（25 步） | 2 张 |
+| `phoenix-1.0` | 2370 neurons（25 步） | 4 张 |
+| `lucid-origin` | 2544 neurons（25 步） | 3 张 |
+
+`estimateNeurons()` 复刻了这套算法，改价目表时同步改它。
+
+### 图片存储
+
+图片不进对话记录。`web/src/image-store.ts` 用 `idb-keyval` 的 `createStore("cf-chat", "images")` 开独立 store：
+
+1. 拿到 base64 → `Blob` → 解码 → 画到 canvas（长边压到 1536px）→ `toBlob("image/webp", 0.9)`。
+2. 存 `{ id, blob, width, height, bytes, createdAt }`，消息里只留 `{ id, width, height, bytes }`。
+3. 显示时按 id 取 blob 并缓存 object URL（`urlCache`），避免重复解码。
+4. 删除会话时按 id 删；页面加载时 `pruneImages()` 清掉没有任何消息引用的孤儿。
+
+这样做的原因：一张 1024×1024 PNG 有几百 KB，若内联进 `Conversation`，每次保存会话都要重写几 MB，很快会撞上 IndexedDB 的写入限制。
+
 ## 安全边界
 
-- **Base URL 白名单**：浏览器只能提交预设 id 或 `custom` + 一个 https 公网地址；Worker 会拒绝内网地址（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`*.local` 等），避免接口被当成开放代理。
+- **Base URL 白名单**：浏览器只能提交预设 id 或 `custom` + 一个 https 公网地址；Worker 会拒绝内网地址（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`*.local` 等），避免接口被当成开放代理。对话与画图两条链路各有一份同样的校验。
 - **模型名只接受字符串**，不参与 URL 拼接；密钥只经请求头传入，不写日志。
-- **限流**：使用 Workers 的 `ratelimits` binding（每边缘位置近似计数）。
+- **限流**：使用 Workers 的 `ratelimits` binding（每边缘位置近似计数）。对话 12 次/60 秒/IP，画图 3 次/60 秒/IP——画图单次成本高，限得更紧。
 - **Markdown**：`marked` 输出经 DOMPurify 清洗，链接统一加 `rel="noopener noreferrer"`；思考过程按纯文本写入 `textContent`，不经过 HTML 解析。
-- **背景图**：仅存于浏览器 IndexedDB（上传时压到最长边 1920px），不上传服务端。
+- **背景图与生成的图片**：仅存于浏览器 IndexedDB（背景图压到最长边 1920px，生成的图片转 WebP 压到 1536px），不上传服务端。
+- **图像尺寸由服务端决定**：客户端只能选比例 id，像素由 `clampSize()` 按模型能力收敛，避免用超大尺寸刷额度。
 - **CSP**：`web/public/_headers` 里给出基础策略，静态资源由 Workers 直接托管。
 
 ## 加一个新的提供商
 
+对话：
+
 1. 在 `shared/models.ts` 的 `COMPAT_PRESETS` 里加一条（id / label / baseUrl / models / keyUrl）。
 2. 如果它不是 OpenAI 兼容协议（例如 Anthropic 原生接口），在 `src/providers/` 新建适配器，返回 `AsyncGenerator<Delta>`，然后在 `src/chat.ts` 的 `streamChat` 里分支。
 3. 前端设置面板会自动读到新预设，无需改动 UI。
+
+画图：
+
+1. Workers AI 新模型：在 `shared/images.ts` 的 `WORKERS_AI_IMAGE_MODELS` 加一条，**必须填对 `input`（json/multipart）与 `output`（base64/binary）**，否则运行期才会炸。`src/providers/workers-ai-image.ts` 会按这两个字段自动组装请求并归一化输出。
+2. OpenAI 兼容图像服务：在 `IMAGE_PRESETS` 加一条即可，适配器固定请求 `b64_json`。
+3. 前端设置面板与比例/张数参数栏都会自动读到新条目。
 
 ## 部署细节
 

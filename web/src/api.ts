@@ -1,4 +1,9 @@
 import type { ChatMessage, CompatPreset, ProviderKind, ThinkingMode } from "../../shared/models";
+import type {
+  ImageModelSpec,
+  ImagePreset,
+  ImageRatio,
+} from "../../shared/images";
 import { providerUsage } from "../../shared/tokens";
 import type { Usage } from "../../shared/tokens";
 
@@ -43,6 +48,14 @@ export interface Catalog {
   compatPresets: CompatPreset[];
   mock: boolean;
   serverKey: boolean;
+  images: {
+    configured: boolean;
+    defaultModel: string;
+    models: ImageModelSpec[];
+    presets: ImagePreset[];
+    ratios: ImageRatio[];
+    serverKey: boolean;
+  };
 }
 
 const EVENT_SEPARATOR = /\r?\n\r?\n/;

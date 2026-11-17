@@ -22,10 +22,19 @@
         "limit": 12,
         "period": 60
       }
+    },
+    {
+      "name": "IMAGE_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 3,
+        "period": 60
+      }
     }
   ],
   "vars": {
     "DEFAULT_MODEL": "@cf/qwen/qwen3.8-27b",
-    "FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it"
+    "FALLBACK_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+    "IMAGE_MODEL": "@cf/black-forest-labs/flux-2-klein-9b"
   }
 }

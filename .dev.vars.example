@@ -9,3 +9,11 @@
 # OPENAI_COMPAT_BASE_URL=https://api.deepseek.com/v1
 # OPENAI_COMPAT_API_KEY=sk-...
 # OPENAI_COMPAT_MODEL=deepseek-chat
+
+# Optional: a server-side default key for an OpenAI-compatible *image* provider.
+# Lets visitors generate images without pasting their own key.
+# IMAGE_BASE_URL=https://tokenrhythm.studio/v1
+# IMAGE_API_KEY=sk-...
+#
+# Default Workers AI image model (overrides wrangler.jsonc vars.IMAGE_MODEL).
+# IMAGE_MODEL=@cf/black-forest-labs/flux-2-klein-9b
